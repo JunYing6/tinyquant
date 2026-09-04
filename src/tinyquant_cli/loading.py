@@ -1,0 +1,49 @@
+"""Load and validate user-provided tinyquant factories."""
+
+from __future__ import annotations
+
+import importlib
+import inspect
+from typing import Any
+
+from trading.strategies.base import BaseStrategy
+from trading.streams.base import BaseStream
+
+
+class FactoryContractError(ValueError):
+    """Raised when a backtest factory cannot satisfy the CLI contract."""
+
+
+def load_backtest_factory(
+    path: str,
+) -> tuple[BaseStrategy | BaseStream, Any, Any]:
+    module_name, separator, function_name = path.partition(":")
+    if not separator or not module_name or not function_name or ":" in function_name:
+        raise FactoryContractError("factory must use module:function")
+    try:
+        module = importlib.import_module(module_name)
+        factory = getattr(module, function_name)
+    except (ImportError, AttributeError) as error:
+        raise FactoryContractError(f"cannot load factory {path}: {error}") from error
+    if not callable(factory):
+        raise FactoryContractError(f"factory is not callable: {path}")
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError) as error:
+        raise FactoryContractError(f"cannot inspect factory {path}: {error}") from error
+    if signature.parameters:
+        raise FactoryContractError("backtest factory must not declare arguments")
+    try:
+        value = factory()
+    except Exception as error:
+        raise FactoryContractError(f"factory {path} failed: {error}") from error
+    if not isinstance(value, tuple) or len(value) != 3:
+        raise FactoryContractError("factory must return a three-item tuple")
+    entity, provider, calendar = value
+    if not isinstance(entity, (BaseStrategy, BaseStream)):
+        raise FactoryContractError("factory item 1 must be BaseStrategy or BaseStream")
+    if not callable(getattr(provider, "fetch", None)):
+        raise FactoryContractError("factory item 2 must implement fetch(request, date)")
+    if not callable(getattr(calendar, "get_trade_dates", None)):
+        raise FactoryContractError("factory item 3 must implement get_trade_dates(start, end)")
+    return entity, provider, calendar

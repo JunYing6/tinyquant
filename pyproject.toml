@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinyquant"
+version = "1.1.0"
+description = "tinyquant 1.1 core trading framework"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+]
+
+[project.scripts]
+tq = "tinyquant_cli.app:main"
+
+[project.optional-dependencies]
+cli = [
+    "prompt_toolkit>=3.0",
+    "rich>=13.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tinyquant_cli*", "engines*", "trading*", "tools*"]
