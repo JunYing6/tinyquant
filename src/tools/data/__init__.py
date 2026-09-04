@@ -66,6 +66,7 @@ from .quality import (
     validate_point_in_time,
     validate_request,
 )
+from .gateway import DataGateway
 
 __all__ = [
     "AdapterDescriptor",
@@ -79,6 +80,7 @@ __all__ = [
     "DataContractError",
     "DataError",
     "DataGapError",
+    "DataGateway",
     "DataGapEvent",
     "DataPolicy",
     "DataProvenance",
