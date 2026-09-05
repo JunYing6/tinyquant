@@ -1,1 +1,0 @@
-"""Selector factor namespaces."""
