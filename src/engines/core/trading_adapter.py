@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from dataclasses import replace
+from datetime import date, datetime, timezone
 from typing import Any, Mapping
 
 from engines.core.kline_aggregator import KlineAggregator
@@ -61,7 +62,9 @@ class TradingContractAdapter:
         if hasattr(self.entity, "set_skip_children"):
             self.entity.set_skip_children(self._skip_names)
 
-    def feed_market_event(self, event: MarketEvent) -> None:
+    def feed_market_event(self, event: MarketEvent | Mapping[str, Any]) -> None:
+        if isinstance(event, Mapping):
+            event = market_event_from_dict(event)
         if isinstance(event, RegisteredEvent):
             return
         self._current_date = event.trading_date or self._current_date
@@ -99,7 +102,13 @@ class TradingContractAdapter:
         """Temporary dict compatibility for fast/realtime; remove in Task 8/9."""
         event = market_event_from_dict(tick)
         if trade_date is not None:
-            self._current_date = self._date_key(trade_date)
+            trading_date = self._date_key(trade_date)
+            event_time = event.event_time.astimezone(timezone.utc).replace(
+                year=trading_date.year,
+                month=trading_date.month,
+                day=trading_date.day,
+            )
+            event = replace(event, effective_time=event_time, event_time=event_time, trading_date=trading_date)
         self.feed_market_event(event)
 
     def feed_execution_tick(self, tick: Mapping[str, Any]) -> None:

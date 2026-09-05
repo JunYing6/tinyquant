@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Any, Mapping
 
 import pytest
@@ -14,7 +14,7 @@ from engines.core.slippage import SlippageModel
 from engines.core.tick_matching import MatchingOrder, OrderStatus, TickMatchingEngine
 from engines.core.trading_adapter import TradingContractAdapter
 from engines.core.trading_clock import TradingDayContext
-from tools.data import DataRequest
+from tools.data import DataRequest, TradeTick
 from trading.factors.base import KlineTimingFactor, TickTimingFactor
 from trading.factors.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
 from trading.methods.base import BaseTimeSelection
@@ -287,6 +287,55 @@ def test_trading_adapter_routes_completed_kline_bars_to_strategy() -> None:
     )
 
     assert [(bar.open, bar.close) for bar in factor.bars] == [(10.0, 10.0)]
+
+
+def test_legacy_tick_trade_date_rebuilds_event_date() -> None:
+    factor = NoopTickFactor()
+    strategy = BaseStrategy(
+        "dated-adapter-strategy",
+        timer=BaseTimeSelection("dated-adapter-timer", [], [factor]),
+    )
+    adapter = TradingContractAdapter(strategy)
+
+    adapter.feed_tick(
+        {"code": "000001.SZ", "time": "09:30:01", "price": 10.0},
+        "20240102",
+    )
+
+    assert adapter._current_date == date(2024, 1, 2)
+
+
+def test_typed_trade_tick_preserves_trading_date() -> None:
+    factor = NoopTickFactor()
+    strategy = BaseStrategy(
+        "typed-adapter-strategy",
+        timer=BaseTimeSelection("typed-adapter-timer", [], [factor]),
+    )
+    adapter = TradingContractAdapter(strategy)
+    event_time = datetime(2024, 1, 3, 9, 30, tzinfo=timezone.utc)
+    event = TradeTick(
+        schema_version="1",
+        event_id=None,
+        instrument_id="000001.SZ",
+        asset_type=None,
+        effective_time=event_time,
+        event_time=event_time,
+        available_at=None,
+        trading_date=event_time.date(),
+        source="test",
+        quality="valid",
+        metadata={},
+        event_type="trade",
+        price=10.0,
+        size=100.0,
+        turnover=1000.0,
+        side="UNKNOWN",
+        sequence=None,
+    )
+
+    adapter.feed_market_event(event)
+
+    assert adapter._current_date == date(2024, 1, 3)
 
 
 def test_trading_adapter_forwards_partial_match_fill_volume() -> None:
