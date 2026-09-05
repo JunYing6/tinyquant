@@ -25,11 +25,15 @@ tinyquant 包含七个公开的量化组件基类：
 七个基类全部从 `trading_nodes_base` 命名空间导入：
 
 ```python
-from trading_nodes_base.factors.base import BaseFactor
-from trading_nodes_base.methods.base import BaseRiskControl, BaseStockPicking, BaseTimeSelection
-from trading_nodes_base.minds.base import BaseMind
-from trading_nodes_base.strategies.base import BaseStrategy
-from trading_nodes_base.streams.base import BaseStream
+from trading_nodes_base import (
+    BaseFactor,
+    BaseMind,
+    BaseRiskControl,
+    BaseStockPicking,
+    BaseStrategy,
+    BaseStream,
+    BaseTimeSelection,
+)
 ```
 
 1.1 只发布核心运行时与通用 `tq` CLI，**不内置任何具体策略、Mind、Stream 或数据适配器**。具体因子、选股器、择时器、风控、策略、Mind、Stream 和真实数据适配器属于外部用户项目（例如 `tinyquant-workspace`），通过 `main:build_backtest` 工厂向 CLI 提供 `(BaseStrategy | BaseStream, DataGateway)`。

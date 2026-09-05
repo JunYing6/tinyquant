@@ -21,7 +21,7 @@ from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any, Generic, Literal, TypeVar
 
-from trading_nodes_base.factors.types import normalize_frequency
+from trading_nodes_base.types import normalize_frequency
 
 PriceBasis = Literal["raw", "adjusted_forward", "adjusted_backward"]
 PriceSide = Literal["BUY", "SELL", "UNKNOWN"]

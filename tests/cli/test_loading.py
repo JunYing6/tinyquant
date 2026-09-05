@@ -7,7 +7,7 @@ import pytest
 
 from tinyquant_cli.demos import build_demo_backtest
 from tinyquant_cli.loading import FactoryContractError, load_backtest_factory
-from trading_nodes_base.strategies.base import BaseStrategy
+from trading_nodes_base.strategies import BaseStrategy
 
 
 def test_loader_returns_factory_tuple_from_module_path(monkeypatch) -> None:

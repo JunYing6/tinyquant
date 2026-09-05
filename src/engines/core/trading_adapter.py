@@ -7,9 +7,9 @@ from typing import Any, Mapping
 
 from engines.core.kline_aggregator import KlineAggregator
 from tools.data import Bar, MarketEvent, QuoteTick, RegisteredEvent, TradeTick
-from trading_nodes_base.factors.types import KlineBar
+from trading_nodes_base.types import KlineBar
 from trading_nodes_base.market_events import market_event_from_dict
-from trading_nodes_base.strategies.base import BaseStrategy
+from trading_nodes_base.strategies import BaseStrategy
 
 
 def _strategy_bar_callback(strategy: BaseStrategy):

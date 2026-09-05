@@ -9,12 +9,12 @@ import pytest
 from engines.core.pipeline import DataProviderError
 from engines.fast import FastBacktestEngine
 from tools.data import Bar, DataContractError, DataRequest, InMemoryGateway, Session, TradeTick, TradingPhase
-from trading_nodes_base.factors.base import KlineTimingFactor, TickTimingFactor
-from trading_nodes_base.factors.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
-from trading_nodes_base.methods.base import BaseTimeSelection
-from trading_nodes_base.minds.base import BaseMind
-from trading_nodes_base.strategies.base import BaseStrategy
-from trading_nodes_base.streams.base import BaseStream
+from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
+from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
+from trading_nodes_base.methods import BaseTimeSelection
+from trading_nodes_base.minds import BaseMind
+from trading_nodes_base.strategies import BaseStrategy
+from trading_nodes_base.streams import BaseStream
 
 
 def _instant(day: str, clock: str = "15:00:00") -> datetime:

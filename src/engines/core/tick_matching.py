@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Any, Callable, Mapping
 
 from tools.data import MarketEvent, QuoteTick, TradeTick
-from trading_nodes_base.factors.types import ExecutionMode, ExecutionRequest
+from trading_nodes_base.types import ExecutionMode, ExecutionRequest
 
 
 class OrderStatus(StrEnum):

@@ -11,11 +11,11 @@ def test_release_uses_trading_nodes_base_namespace() -> None:
     assert (root / "src" / "trading_nodes_base").is_dir()
     assert not (root / "src" / "trading").exists()
 
-    from trading_nodes_base.factors.base import BaseFactor
-    from trading_nodes_base.methods.base import BaseRiskControl, BaseStockPicking, BaseTimeSelection
-    from trading_nodes_base.minds.base import BaseMind
-    from trading_nodes_base.strategies.base import BaseStrategy
-    from trading_nodes_base.streams.base import BaseStream
+    from trading_nodes_base.factors import BaseFactor
+    from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection
+    from trading_nodes_base.minds import BaseMind
+    from trading_nodes_base.strategies import BaseStrategy
+    from trading_nodes_base.streams import BaseStream
 
     assert all(
         (
@@ -31,11 +31,11 @@ def test_release_uses_trading_nodes_base_namespace() -> None:
 
 
 def test_public_base_imports() -> None:
-    from trading_nodes_base.factors.base import BaseFactor
-    from trading_nodes_base.methods.base import BaseRiskControl, BaseStockPicking, BaseTimeSelection
-    from trading_nodes_base.minds.base import BaseMind
-    from trading_nodes_base.strategies.base import BaseStrategy
-    from trading_nodes_base.streams.base import BaseStream
+    from trading_nodes_base.factors import BaseFactor
+    from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection
+    from trading_nodes_base.minds import BaseMind
+    from trading_nodes_base.strategies import BaseStrategy
+    from trading_nodes_base.streams import BaseStream
 
     assert all(
         (

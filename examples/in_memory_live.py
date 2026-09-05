@@ -26,10 +26,10 @@ from tools.data import (
     TradeTick,
     TradingPhase,
 )
-from trading_nodes_base.factors.base import TickTimingFactor
-from trading_nodes_base.factors.types import ExecutionMode, ExecutionRequest, SignalIntent
-from trading_nodes_base.methods.base import BaseStockPicking, BaseTimeSelection
-from trading_nodes_base.strategies.base import BaseStrategy
+from trading_nodes_base.factors import TickTimingFactor
+from trading_nodes_base.types import ExecutionMode, ExecutionRequest, SignalIntent
+from trading_nodes_base.methods import BaseStockPicking, BaseTimeSelection
+from trading_nodes_base.strategies import BaseStrategy
 
 
 class DemoFixedPicking(BaseStockPicking):

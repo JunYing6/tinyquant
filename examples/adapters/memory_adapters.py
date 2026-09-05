@@ -401,10 +401,10 @@ def _demo() -> None:
 
     gateway = make_gateway(bars, sessions)
 
-    from trading_nodes_base.factors.base import KlineTimingFactor, TickTimingFactor
-    from trading_nodes_base.factors.types import KlineBar, SignalIntent
-    from trading_nodes_base.methods.base import BaseTimeSelection
-    from trading_nodes_base.strategies.base import BaseStrategy
+    from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
+    from trading_nodes_base.types import KlineBar, SignalIntent
+    from trading_nodes_base.methods import BaseTimeSelection
+    from trading_nodes_base.strategies import BaseStrategy
 
     class PassiveKlineFactor(KlineTimingFactor):
         def __init__(self) -> None:

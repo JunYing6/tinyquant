@@ -9,7 +9,7 @@ from datetime import date, datetime, time
 from typing import Any, Callable, Mapping
 
 from tools.data import Bar, TradeTick
-from trading_nodes_base.factors.types import KlineBar, normalize_frequency
+from trading_nodes_base.types import KlineBar, normalize_frequency
 
 
 _SESSIONS = ((9 * 60 + 30, 11 * 60 + 30), (13 * 60, 15 * 60))

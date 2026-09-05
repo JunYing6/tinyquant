@@ -34,7 +34,7 @@ def market_event_from_dict(value: Mapping[str, Any]):
 
 
 def kline_bar_to_bar(value: Any) -> Bar:
-    from trading_nodes_base.factors.types import KlineBar
+    from trading_nodes_base.types import KlineBar
     if isinstance(value, Bar):
         return value
     if not isinstance(value, KlineBar):

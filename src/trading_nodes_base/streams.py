@@ -12,8 +12,8 @@ from tools.data import DataBatch, DataRequest
 from trading_nodes_base.requests import canonical_request, decode_routing, with_routing
 
 if TYPE_CHECKING:
-    from trading_nodes_base.minds.base import BaseMind
-    from trading_nodes_base.strategies.base import BaseStrategy
+    from trading_nodes_base.minds import BaseMind
+    from trading_nodes_base.strategies import BaseStrategy
 
 
 _MAX_RETURN_HISTORY = 504

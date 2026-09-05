@@ -22,12 +22,12 @@ from tools.data import (
     TradingPhase,
     UnsupportedDatasetError,
 )
-from trading_nodes_base.factors.base import TickTimingFactor
-from trading_nodes_base.factors.types import ExecutionMode, ExecutionRequest, SignalIntent
-from trading_nodes_base.methods.base import BaseStockPicking, BaseTimeSelection
-from trading_nodes_base.minds.base import BaseMind
-from trading_nodes_base.strategies.base import BaseStrategy
-from trading_nodes_base.streams.base import BaseStream
+from trading_nodes_base.factors import TickTimingFactor
+from trading_nodes_base.types import ExecutionMode, ExecutionRequest, SignalIntent
+from trading_nodes_base.methods import BaseStockPicking, BaseTimeSelection
+from trading_nodes_base.minds import BaseMind
+from trading_nodes_base.strategies import BaseStrategy
+from trading_nodes_base.streams import BaseStream
 
 
 def _day(offset: int = 0) -> str:
