@@ -62,38 +62,44 @@ REPL 同时接受 `command` 和 `/command` 格式，支持自动补全，保存�
 `tq backtest run` 会加载一个无参数的 Python 工厂函数，该函数必须准确返回：
 
 ```python
-(BaseStrategy | BaseStream, MarketDataProvider, TradingCalendarProvider)
+(BaseStrategy | BaseStream, DataGateway)
 ```
 
-工厂函数负责创建策略并选择提供者。CLI 参数只能覆盖开始日期、结束日期、资金和运行模式。tinyquant 不会选择数据供应商、不读取本地数据库，也不会重试失败的提供者请求。
+工厂函数负责创建策略并组装数据网关。CLI 参数只能覆盖开始日期、结束日期、资金和运行模式；数据供应商选择、重试和数据质量策略由 `DataGateway` 负责。
 
-## 提供者
+## 数据扩展架构
 
-核心版本不提供默认的市场数据、行情或券商实现。请提供实现以下协议的适配器：
+`tools.data` 是唯一数据层：契约定义标准 `Bar`、`Session`、`DataBatch` 和请求，`HistoricalDataPort`/`TradingCalendarPort` 是适配器端口，`DataGateway` 根据 `default_catalog()` 与 `DataBinding` 路由、校验、审计来源并应用策略。
 
-- `MarketDataProvider.fetch(request, date)`：获取历史数据和策略日数据。
-- `TradingCalendarProvider.get_trade_dates(start, end)`：获取回测交易日历。
-- `QuoteProvider.subscribe(codes, on_tick)`、`start()` 和 `stop()`：获取实时行情数据。
-- `TradeExecutor.connect()`、`buy()`、`sell()`、账户快照、持仓和 `disconnect()`：执行实盘交易。
+默认 Catalog 注册 37 个数据集。接入新数据源时，在独立集成包或 `examples/adapters/` 中实现端口，不要把供应商类型传入引擎：
 
-`examples/` 下的示例在内存中实现了所有提供者。真实的数据供应商和券商适配器应放在独立的集成包中。
+```python
+class VendorBars:
+    descriptor = AdapterDescriptor(...)
 
-## 回测
+    def read(self, request: DataRequest) -> DataBatch[Bar]:
+        return DataBatch(...)
+
+    def iter(self, request: DataRequest, chunk_size=10_000):
+        yield self.read(request)
+```
+
+实现还应按请求过滤记录、返回完整的标准批次，并在 `descriptor` 声明 dataset/mode/schema/capability。日历适配器实现 `sessions(CalendarRequest) -> CalendarBatch`。完整的无凭据示例见 `examples/adapters/memory_adapters.py`。
+
+## 用 DataGateway 运行
 
 ```python
 from engines.fast import FastBacktestEngine
+from examples.adapters.memory_adapters import make_gateway
 
-engine = FastBacktestEngine(
-    strategy,
-    "20240102",
-    "20241231",
-    data_provider=market_provider,
-    calendar_provider=calendar_provider,
-    mode="auto",
-)
+strategy = ...
+gateway = make_gateway(bars, sessions)
+engine = FastBacktestEngine(strategy, "20240102", "20241231", mode="auto", data_gateway=gateway)
 engine.run()
 print(engine.get_stats())
 ```
+
+实盘引擎同样只接收 `(strategy_or_stream, data_gateway)` 的统一数据入口；实时适配器可在同一 Gateway 上提供 `subscribe`/`poll`。不引入真实供应商或凭据，供应商和券商执行器应放在独立集成包中。
 
 `fast` 模式使用已完成的日 K 线，并在下一个数据源 K 线执行交易意图。`tick` 模式将提供者推送的行情通过内存撮合器处理。`auto` 模式仅在策略声明兼容组件时选择快速模式。
 
