@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Mapping
 
 from tools.data import DataBatch, DataRequest
@@ -20,7 +21,7 @@ def decode_routing(key: str) -> dict[str, str] | None:
     if not isinstance(key, str) or not key:
         return None
     result: dict[str, str] = {}
-    for item in key.split(":"):
+    for item in re.split(r":(?=[^:=]*=)", key):
         if "=" not in item:
             continue
         name, value = item.split("=", 1)
@@ -53,6 +54,9 @@ def canonical_request(query: Any, *, delivery_key: str | None = None, default_da
         mapping = {
             "market/daily": "market.bar", "market/tick": "market.trade",
             "index/daily": "index.bar", "index/member": "index.member",
+            "sw/industry": "industry.membership", "fina/report": "fundamental.report",
+            "fina/quarterly": "fundamental.report", "event/news": "event.news",
+            "event/announcement": "event.announcement",
             "trade_data/minute": "market.bar", "trade_data/daily": "market.bar",
             "technical/indicator": "derived.technical_indicator",
         }
@@ -68,17 +72,25 @@ def canonical_request(query: Any, *, delivery_key: str | None = None, default_da
     frequency = _value(query, "frequency")
     if scope == "trade_data/minute":
         frequency = frequency or _value(query, "period") or "1m"
-    if scope == "market/daily" and any(field in (_value(query, "fields", ()) or ()) for field in ("pe", "pb", "市盈率", "市净率")):
+    fields_value = _value(query, "fields", _value(query, "period"))
+    if scope == "market/daily" and any(field in (fields_value or ()) for field in ("pe", "pb", "市盈率", "市净率")):
         dataset = "market.daily_snapshot"
     anchor = _value(query, "anchor", _value(query, "trade_date", _value(query, "date")))
     if isinstance(anchor, datetime) and anchor.tzinfo is None:
-        from datetime import timezone
         anchor = anchor.replace(tzinfo=timezone.utc)
     windows = _value(query, "windows")
-    fields = _value(query, "fields", _value(query, "period"))
+    if windows is not None:
+        if not isinstance(windows, (tuple, list)) or len(windows) != 2 or any(isinstance(value, bool) or not isinstance(value, int) for value in windows) or windows[0] > windows[1]:
+            raise ValueError("windows must be an ordered pair of integers")
+        if anchor is None:
+            raise ValueError("windows requires an anchor")
+    start = _value(query, "start")
+    end = _value(query, "end")
     instruments = _value(query, "instruments", _value(query, "codes"))
     routed = delivery_key or query.get("delivery_key") or query.get("idx")
+    fields = fields_value
     return DataRequest(dataset=dataset, frequency=frequency, anchor=anchor,
+                       start=start, end=end,
                        session_window=tuple(windows) if windows is not None else None,
                        instruments=tuple(instruments) if instruments is not None else None,
                        fields=tuple(fields) if fields is not None and not isinstance(fields, str) else ((fields,) if fields else None),

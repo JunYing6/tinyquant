@@ -6,6 +6,7 @@ from datetime import datetime
 import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
+from tools.data import DataRequest as CanonicalDataRequest
 from tools.data_getter.market.schema import DataRequest
 from trading.factors.types import (
     ExecutionMode,
@@ -567,17 +568,18 @@ def test_timer_history_routes_without_clearing_active_factor_state() -> None:
     history = next(item for item in requirements if item.get("source") == "timer_history")
 
     assert active.get("idy") == history.get("idy")
-    assert active.get("request_id") != history.get("request_id")
+    assert active.get("request_channel") != history.get("request_channel")
     timer.receive_data(
         {
             "source": "timer",
             "idy": active.get("idy"),
             "idx": "001",
-            "request_id": active.get("request_id"),
-        },
-        "active-data",
+                "request_id": active.get("request_id"),
+                "generation": active.get("generation"),
+            },
+            "active-data",
     )
-    assert timer.check_data()
+    assert "active-data" in timer.all_factors[0]._received_data.values()
     timer.receive_data(
         {
             "source": "timer_history",
@@ -611,11 +613,11 @@ def test_mapping_requests_work_standalone_and_inside_a_stream() -> None:
     stream_queries = stream.prepare_requirements(datetime(2024, 1, 2))
 
     standalone = next(item for item in standalone_queries if item.get("source") == "risk")
-    assert isinstance(standalone, DataRequest)
-    assert standalone["domain"] == "market"
-    assert isinstance(stream_queries[0], DataRequest)
-    assert stream_queries[0]["domain"] == "market"
-    assert stream_queries[0]["source_strategy"] == "mapping-strategy"
+    assert isinstance(standalone, CanonicalDataRequest)
+    assert standalone.dataset == "market.bar"
+    assert isinstance(stream_queries[0], CanonicalDataRequest)
+    assert stream_queries[0].dataset == "market.bar"
+    assert stream_queries[0].get("source_strategy") == "mapping-strategy"
 
 
 @pytest.mark.parametrize("request_form", ["data_request", "scope", "domain_kind", "legacy"])
@@ -635,14 +637,15 @@ def test_strategy_and_stream_normalize_equivalent_request_forms(request_form: st
         and item.get("source") == "risk"
     )
 
-    assert isinstance(standalone, DataRequest)
-    assert isinstance(streamed, DataRequest)
-    assert standalone.scope == streamed.scope == "market/daily"
-    assert standalone["date"] == streamed["date"] == datetime(2024, 1, 2)
-    assert standalone["idy"] == streamed["idy"]
-    assert standalone["request_id"] != streamed["request_id"]
-    assert streamed["source"] == "risk"
-    assert streamed["source_strategy"] == strategy.strategy_name
+    assert isinstance(standalone, CanonicalDataRequest)
+    assert isinstance(streamed, CanonicalDataRequest)
+    assert standalone.dataset == streamed.dataset == "market.bar"
+    assert standalone.anchor == streamed.anchor
+    assert standalone.anchor.replace(tzinfo=None) == datetime(2024, 1, 2)
+    assert standalone.get("idy") == streamed.get("idy")
+    assert standalone.delivery_key != streamed.delivery_key
+    assert streamed.get("source") == "risk"
+    assert streamed.get("source_strategy") == strategy.strategy_name
 
 
 def test_strategy_daily_execute_uses_price_dict_for_pending_requests() -> None:

@@ -155,9 +155,51 @@ class BaseComponent(ABC):
     def receive_data(self, sign: dict, data: Any) -> None:
         factor = self._idy_map.get(int(sign.get("idy", -1)))
         if factor is not None:
-            if sign.get("source") == "timer_history" and "request_channel" not in sign:
+            is_history = (
+                sign.get("request_channel") == "history"
+                or sign.get("source") == "timer_history"
+            )
+            if is_history and "request_channel" not in sign:
                 sign = {**sign, "request_channel": "history"}
+            expected_request_ids = (
+                factor._history_expected_request_ids
+                if is_history
+                else factor._expected_request_ids
+            )
+            request_id = sign.get("request_id")
+            legacy_request_id = request_id
+            generation = (
+                factor._active_history_generation
+                if is_history
+                else factor._active_generation
+            )
+            if request_id not in expected_request_ids and request_id is not None:
+                status = factor._history_request_status if is_history else factor._request_status
+                pending = [key for key in expected_request_ids if not status.get(key, False)]
+                if len(pending) == 1 and str(request_id) == self.name:
+                    if is_history:
+                        sign = {**sign, "request_id": pending[0]}
+                        request_id = pending[0]
+                    else:
+                        legacy_request_id = request_id
+                        expected_request_ids.append(str(request_id))
+                        sign = {**sign, "request_id": pending[0]}
+                        request_id = pending[0]
+                else:
+                    return
+            supplied_generation = sign.get("generation")
+            if supplied_generation is not None and supplied_generation != generation:
+                if not (str(generation).startswith(f"{supplied_generation}:") and request_id in expected_request_ids):
+                    return
+                sign = {**sign, "generation": generation}
             factor.receive_data(sign, data)
+            status = factor._history_request_status if is_history else factor._request_status
+            if legacy_request_id is not None:
+                legacy_key = str(legacy_request_id)
+                if is_history:
+                    status[legacy_key] = True
+                elif legacy_key not in status:
+                    status[legacy_key] = True
 
     def _reset_factor_state(self) -> None:
         self._idy_map.clear()

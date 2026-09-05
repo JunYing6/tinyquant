@@ -113,6 +113,12 @@ class BaseStrategy:
         return requirements
 
     def receive_data(self, batch: DataBatch, delivery_key: str | None = None) -> None:
+        if isinstance(batch, dict) and delivery_key is not None and not isinstance(delivery_key, str):
+            sign = batch
+            component = {"selector": self.selector, "timer": self.timer, "timer_history": self.timer, "risk": self.risk_ctrl}.get(sign.get("source"))
+            if component is not None:
+                component.receive_data(sign, delivery_key)
+            return
         sign = {**(decode_routing(delivery_key or batch.request_id) or {})}
         source = sign.get("source")
         if not isinstance(source, str):

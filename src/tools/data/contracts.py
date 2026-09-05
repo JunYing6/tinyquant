@@ -122,6 +122,29 @@ class DataRequest:
     limit: int | None = None
     asset_type: str | None = None
 
+    @property
+    def scope(self) -> str:
+        return {"market.bar": "market/daily", "index.bar": "index/daily"}.get(self.dataset, self.dataset)
+
+    def __getitem__(self, key: str) -> Any:
+        value = self.get(key, None)
+        if value is None:
+            raise KeyError(key)
+        return value
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if self.delivery_key and "=" in self.delivery_key:
+            import re
+            if key in {"generation", "request_id"}:
+                match = re.search(rf"(?:^|:){key}=(.*?)(?=:[A-Za-z_]\w*=|$)", self.delivery_key)
+                if match:
+                    return match.group(1)
+            routing = dict(item.split("=", 1) for item in re.split(r":(?=[A-Za-z_]\w*=)", self.delivery_key) if "=" in item)
+            if key in routing:
+                value = routing[key]
+                return int(value) if key == "idy" and value.isdigit() else value
+        return getattr(self, key, default)
+
     def __post_init__(self) -> None:
         if not isinstance(self.dataset, str) or not self.dataset.strip():
             raise ValueError("dataset must be a non-empty string")

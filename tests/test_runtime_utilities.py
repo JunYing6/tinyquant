@@ -14,7 +14,7 @@ from engines.core.slippage import SlippageModel
 from engines.core.tick_matching import MatchingOrder, OrderStatus, TickMatchingEngine
 from engines.core.trading_adapter import TradingContractAdapter
 from engines.core.trading_clock import TradingDayContext
-from tools.data_getter.market.schema import DataRequest
+from tools.data import DataRequest
 from trading.factors.base import KlineTimingFactor, TickTimingFactor
 from trading.factors.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
 from trading.methods.base import BaseTimeSelection
@@ -162,7 +162,7 @@ class PipelineEntity:
         self.received: list[tuple[dict, object]] = []
 
     def prepare_requirements(self, date: datetime) -> list[DataRequest]:
-        return [DataRequest("market", "daily", {"date": date.strftime("%Y%m%d")}, "daily")]
+        return [DataRequest(dataset="market.bar", anchor=date.strftime("%Y%m%d"), delivery_key="daily")]
 
     def receive_data(self, sign: dict, data: object) -> None:
         self.received.append((sign, data))
