@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime
+
+from tools.data.errors import DataContractError
 from typing import Any, Literal, Mapping, cast
 
 from engines.core.account import Account
@@ -63,8 +65,16 @@ class FastBacktestEngine:
 
     def run(self) -> None:
         sessions = self.data_gateway.sessions(CalendarRequest(market="CN", start=datetime.strptime(self.start_date, "%Y%m%d").date(), end=datetime.strptime(self.end_date, "%Y%m%d").date()))
-        self.trade_dates = [session.trading_date.strftime("%Y%m%d") for session in sessions.records]
-        for index, session in enumerate(sessions.records, 1):
+        if not sessions.complete or sessions.next_cursor is not None:
+            raise DataContractError("calendar batch must be complete and fully consumed")
+        records = tuple(sessions.records)
+        expected_start = datetime.strptime(self.start_date, "%Y%m%d").date()
+        expected_end = datetime.strptime(self.end_date, "%Y%m%d").date()
+        dates = [session.trading_date for session in records]
+        if dates != sorted(set(dates)) or any(not expected_start <= value <= expected_end for value in dates):
+            raise DataContractError("calendar sessions are not unique, ordered, and in range")
+        self.trade_dates = [session.trading_date.strftime("%Y%m%d") for session in records]
+        for index, session in enumerate(records, 1):
             if self.progress_callback is not None:
                 self.progress_callback(f"Trading day {self.trade_dates[index - 1]}", index, len(self.trade_dates))
             self._run_day(session)
@@ -112,7 +122,10 @@ class FastBacktestEngine:
         events = []
         for dataset in ("market.trade", "market.quote"):
             batch = self.data_gateway.read(DataRequest(dataset=dataset, instruments=tuple(codes), start=session.open, end=session.close))
+            if not batch.complete or batch.next_cursor is not None:
+                raise DataContractError(f"{dataset} batch must be complete and fully consumed")
             events.extend(batch.records)
+        events.sort(key=lambda event: (event.event_time or datetime.min.replace(tzinfo=session.open.tzinfo), getattr(event, "sequence", 0) or 0))
         clock = ReplayClock(session)
         replay_events(events, clock, self._adapter.feed_market_event)
         self._adapter.flush_day(session.trading_date)

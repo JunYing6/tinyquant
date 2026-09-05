@@ -741,13 +741,25 @@ class DataGateway:
                 dataset=_CALENDAR_DATASET,
                 request_id=request_id,
             )
+        if not isinstance(batch, DataBatch) or batch.dataset != _CALENDAR_DATASET:
+            raise DataContractError(
+                f"calendar adapter {descriptor.name!r} did not return a CalendarBatch",
+                dataset=_CALENDAR_DATASET, request_id=request_id,
+            )
+        previous = None
+        seen = set()
         for record in batch.records:
             if not isinstance(record, Session):
-                raise DataContractError(
-                    f"calendar adapter {descriptor.name!r} returned a non-Session record",
-                    dataset=_CALENDAR_DATASET,
-                    request_id=request_id,
-                )
+                raise DataContractError(f"calendar adapter {descriptor.name!r} returned a non-Session record", dataset=_CALENDAR_DATASET, request_id=request_id)
+            if not request.start <= record.trading_date <= request.end or record.trading_date in seen:
+                raise DataContractError("calendar sessions are outside range or duplicated", dataset=_CALENDAR_DATASET, request_id=request_id)
+            if previous is not None and record.trading_date <= previous:
+                raise DataContractError("calendar sessions must be strictly ordered", dataset=_CALENDAR_DATASET, request_id=request_id)
+            previous = record.trading_date
+            seen.add(record.trading_date)
+            for phase in record.phases:
+                if phase.start.tzinfo is None or phase.end.tzinfo is None or phase.start > phase.end:
+                    raise DataContractError("calendar phase has invalid timezone or bounds", dataset=_CALENDAR_DATASET, request_id=request_id)
         fingerprint = self._calendar_fingerprint(request)
         provenance = self._build_provenance(descriptor, fingerprint, False)
         return batch.with_request_context(request_id, None, provenance)

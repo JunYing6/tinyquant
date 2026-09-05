@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from engines.core.trading_clock import TradingDayContext
@@ -37,9 +37,9 @@ class UnifiedDataPipeline:
                 raise RuntimeError("pipeline exceeded 1000 continuation iterations")
             for query in queries:
                 request = canonical_request(query)
-                as_of = self.clock.as_of() if self.clock is not None else datetime.strptime(decision_date, "%Y%m%d")
+                as_of = self.clock.as_of() if self.clock is not None else datetime.strptime(decision_date, "%Y%m%d").replace(tzinfo=timezone.utc)
                 if as_of.tzinfo is None:
-                    as_of = as_of.astimezone()
+                    as_of = as_of.replace(tzinfo=timezone.utc)
                 from dataclasses import replace
                 request = replace(request, anchor=request.anchor or as_of.date(), as_of=request.as_of or as_of)
                 try:
