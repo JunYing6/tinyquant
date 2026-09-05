@@ -14,7 +14,7 @@ from engines.core.slippage import SlippageModel
 from engines.core.tick_matching import MatchingOrder, OrderStatus, TickMatchingEngine
 from engines.core.trading_adapter import TradingContractAdapter
 from engines.core.trading_clock import TradingDayContext
-from tools.data import DataRequest, TradeTick
+from tools.data import Bar, DataBatch, DataProvenance, DataRequest, QualityReport, TradeTick
 from trading.factors.base import KlineTimingFactor, TickTimingFactor
 from trading.factors.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
 from trading.methods.base import BaseTimeSelection
@@ -132,12 +132,13 @@ def test_fast_execution_adapter_defers_intent_to_next_source_bar() -> None:
     adapter = FastExecutionAdapter()
     adapter.queue([SignalIntent("000001.SZ", "BUY", "20240102", "entry")])
 
-    requests = adapter.on_source_bar(
-        KlineBar("000001.SZ", "1d", "20240103", 10.0, 11.0, 9.0, 10.5, 100, 1_050)
-    )
+    bar_end = datetime(2024, 1, 3, 15, 0, tzinfo=timezone.utc)
+    source = Bar(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=bar_end, event_time=bar_end, available_at=bar_end, trading_date=bar_end.date(), source="test", quality="valid", metadata={}, frequency="1d", interval_start=bar_end, interval_end=bar_end, open=10.0, high=11.0, low=9.0, close=10.5, volume=100, turnover=1050, is_complete=True, price_basis="raw")
+
+    requests = adapter.on_source_bar(source)
 
     assert requests == [
-        ExecutionRequest("000001.SZ", "BUY", "20240103", price=10.0, reason="entry")
+        ExecutionRequest("000001.SZ", "BUY", bar_end, price=10.0, reason="entry")
     ]
 
 
@@ -148,48 +149,55 @@ def test_trading_day_context_requires_prior_as_of_date() -> None:
         TradingDayContext("20240108", "20240108")
 
 
-class RecordingProvider:
-    def __init__(self) -> None:
-        self.calls: list[tuple[DataRequest, str]] = []
+def _batch(records: list[Any]) -> DataBatch:
+    return DataBatch(request_id="test", dataset="market.bar", schema_version="1", correlation_id=None, records=tuple(records), complete=True, next_cursor=None, provenance=DataProvenance(adapter_name="test", source_revision="1", request_fingerprint="test", read_at=datetime.now(timezone.utc)), quality=QualityReport(status="ok", checked_count=len(records)))
 
-    def fetch(self, request: DataRequest, date: str) -> list[dict]:
-        self.calls.append((request, date))
-        return [{"close": 10.0}]
+
+class RecordingGateway:
+    def __init__(self) -> None:
+        self.calls: list[DataRequest] = []
+
+    def read(self, request: DataRequest) -> DataBatch:
+        self.calls.append(request)
+        return _batch([{"close": 10.0}])
+
+    def sessions(self, request: object) -> object:
+        return None
 
 
 class PipelineEntity:
     def __init__(self) -> None:
-        self.received: list[tuple[dict, object]] = []
+        self.received: list[tuple[object, object]] = []
 
     def prepare_requirements(self, date: datetime) -> list[DataRequest]:
-        return [DataRequest(dataset="market.bar", anchor=date.strftime("%Y%m%d"), delivery_key="daily")]
+        return [DataRequest(dataset="market.bar", anchor=date.replace(tzinfo=timezone.utc), delivery_key="daily")]
 
-    def receive_data(self, sign: dict, data: object) -> None:
-        self.received.append((sign, data))
+    def receive_data(self, batch: DataBatch, delivery_key: str | None) -> None:
+        self.received.append((batch, delivery_key))
 
     def continue_pipeline(self, date: datetime) -> list[DataRequest]:
         return []
 
 
-def test_pipeline_routes_provider_data_and_request_metadata() -> None:
+def test_pipeline_routes_gateway_data_and_delivery_key() -> None:
     entity = PipelineEntity()
-    provider = RecordingProvider()
+    gateway = RecordingGateway()
 
-    UnifiedDataPipeline(entity, provider).run_daily("20240102")
+    UnifiedDataPipeline(entity, gateway).run_daily("20240102")
 
-    assert provider.calls[0][1] == "20240102"
-    assert entity.received == [
-        ({"idx": "daily", "date": "20240102"}, [{"close": 10.0}])
-    ]
+    assert gateway.calls[0].dataset == "market.bar"
+    assert gateway.calls[0].as_of is not None
+    assert entity.received[0][1] == "daily"
+    assert entity.received[0][0].records == ({"close": 10.0},)
 
 
-def test_pipeline_wraps_provider_failure_with_request_context() -> None:
-    class FailingProvider:
-        def fetch(self, request: DataRequest, date: str) -> object:
+def test_pipeline_wraps_gateway_failure_with_request_context() -> None:
+    class FailingGateway:
+        def read(self, request: DataRequest) -> object:
             raise RuntimeError("unavailable")
 
-    with pytest.raises(DataProviderError, match="market/daily.*20240102.*unavailable"):
-        UnifiedDataPipeline(PipelineEntity(), FailingProvider()).run_daily("20240102")
+    with pytest.raises(DataProviderError, match="market.bar.*20240102.*unavailable"):
+        UnifiedDataPipeline(PipelineEntity(), FailingGateway()).run_daily("20240102")
 
 
 def test_pipeline_continues_queryless_entity_once() -> None:
@@ -209,7 +217,7 @@ def test_pipeline_continues_queryless_entity_once() -> None:
 
     entity = QuerylessEntity()
 
-    UnifiedDataPipeline(entity, RecordingProvider()).run_daily("20240102")
+    UnifiedDataPipeline(entity, RecordingGateway()).run_daily("20240102")
 
     assert entity.continued == 1
 
@@ -273,36 +281,21 @@ class NoopTickFactor(TickTimingFactor):
         return []
 
 
+def _trade_event(clock: str, price: float, size: float = 100.0, turnover: float = 1000.0) -> TradeTick:
+    event_time = datetime.strptime(f"20240102 {clock}", "%Y%m%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return TradeTick(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=event_time, event_time=event_time, available_at=None, trading_date=event_time.date(), source="test", quality="valid", metadata={}, event_type="trade", price=price, size=size, turnover=turnover, side="UNKNOWN", sequence=None)
+
+
 def test_trading_adapter_routes_completed_kline_bars_to_strategy() -> None:
     factor = RecordingKlineFactor()
     timer = BaseTimeSelection("adapter-timer", [factor], [NoopTickFactor()])
     strategy = BaseStrategy("adapter-strategy", timer=timer)
     adapter = TradingContractAdapter(strategy)
 
-    adapter.feed_tick(
-        {"code": "000001.SZ", "time": "09:30:01", "price": 10.0, "volume": 100, "amount": 1_000}
-    )
-    adapter.feed_tick(
-        {"code": "000001.SZ", "time": "09:31:01", "price": 11.0, "volume": 100, "amount": 1_100}
-    )
+    adapter.feed_market_event(_trade_event("09:30:01", 10.0, 100.0, 1000.0))
+    adapter.feed_market_event(_trade_event("09:31:01", 11.0, 100.0, 1100.0))
 
     assert [(bar.open, bar.close) for bar in factor.bars] == [(10.0, 10.0)]
-
-
-def test_legacy_tick_trade_date_rebuilds_event_date() -> None:
-    factor = NoopTickFactor()
-    strategy = BaseStrategy(
-        "dated-adapter-strategy",
-        timer=BaseTimeSelection("dated-adapter-timer", [], [factor]),
-    )
-    adapter = TradingContractAdapter(strategy)
-
-    adapter.feed_tick(
-        {"code": "000001.SZ", "time": "09:30:01", "price": 10.0},
-        "20240102",
-    )
-
-    assert adapter._current_date == date(2024, 1, 2)
 
 
 def test_typed_trade_tick_preserves_trading_date() -> None:
@@ -366,10 +359,7 @@ def test_trading_adapter_forwards_partial_match_fill_volume() -> None:
     strategy = EventStrategy()
     strategy.tick_matcher = PartialMatcher()
 
-    TradingContractAdapter(strategy).feed_tick(
-        {"code": "000001.SZ", "time": "09:30:01", "price": 10.0},
-        "20240102",
-    )
+    TradingContractAdapter(strategy).feed_market_event(_trade_event("09:30:01", 10.0))
 
     assert strategy.events[0]["filled_volume"] == 50
 

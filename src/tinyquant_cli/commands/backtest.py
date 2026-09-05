@@ -20,15 +20,14 @@ def run_backtest(
     mode: str,
 ) -> int:
     try:
-        entity, provider, calendar = load_backtest_factory(factory_path)
+        entity, data_gateway = load_backtest_factory(factory_path)
         engine = FastBacktestEngine(
             entity,
             start,
             end,
             initial_capital=capital,
             mode=mode,
-            data_provider=provider,
-            calendar_provider=calendar,
+            data_gateway=data_gateway,
             progress_bar=False,
         )
         engine.run()

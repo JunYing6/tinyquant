@@ -77,7 +77,7 @@ class BaseStream:
 
     @staticmethod
     def _normalize_query(query: Any) -> DataRequest:
-        return coerce_data_request(query)
+        return canonical_request(query)
 
     def receive_data(self, sign: Dict[str, Any], data: Any) -> None:
         name = sign.get("source_strategy")

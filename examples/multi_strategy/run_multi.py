@@ -9,7 +9,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(root / "src"))
 
 from engines.fast import FastBacktestEngine
-from examples.multi_strategy.data import InMemoryCalendar, InMemoryStrategyData
+from examples.multi_strategy.data import InMemoryStrategyData
 from trading.streams.multi_strategy import MultiStrategyStream
 from trading.strategies.simple_strategies import (
     AtrStopStrategy,
@@ -25,8 +25,8 @@ from trading.strategies.simple_strategies import (
 
 
 def main() -> int:
-    provider = InMemoryStrategyData()
-    calendar = InMemoryCalendar()
+    gateway = InMemoryStrategyData()
+    dates = [session.trading_date.strftime("%Y%m%d") for session in gateway._sessions]
     strategies = [
         DualMaStrategy,
         BreakoutStrategy,
@@ -42,9 +42,8 @@ def main() -> int:
         engine = FastBacktestEngine(
             strategy_type(),
             "20240102",
-            calendar.dates[-1],
-            data_provider=provider,
-            calendar_provider=calendar,
+            dates[-1],
+            data_gateway=gateway,
             mode="fast",
             progress_bar=False,
         )
@@ -56,9 +55,8 @@ def main() -> int:
     stream_engine = FastBacktestEngine(
         stream,
         "20240102",
-        calendar.dates[-1],
-        data_provider=provider,
-        calendar_provider=calendar,
+        dates[-1],
+        data_gateway=gateway,
         mode="fast",
         progress_bar=False,
     )

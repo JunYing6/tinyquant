@@ -1,35 +1,9 @@
-"""Credential-free market and calendar providers for examples."""
+"""Credential-free market data for examples."""
 
-from __future__ import annotations
-
-from typing import Any
-
-from tools.data_getter.market.schema import DataRequest
+from tools.data import InMemoryGateway
 
 
-class InMemoryCalendar:
-    def __init__(self, dates: list[str]) -> None:
-        self.dates = list(dates)
-
-    def get_trade_dates(self, start: str, end: str) -> list[str]:
-        return [date for date in self.dates if start <= date <= end]
-
-
-class InMemoryMarketDataProvider:
-    def __init__(
-        self,
-        daily: dict[str, list[dict[str, Any]]],
-        ticks: dict[str, list[dict[str, Any]]] | None = None,
-    ) -> None:
-        self.daily = daily
-        self.ticks = ticks or {}
-
-    def fetch(self, request: DataRequest, date: str) -> list[dict[str, Any]]:
-        if request.scope == "market/daily":
-            return list(self.daily.get(date, []))
-        if request.scope == "market/tick":
-            return list(self.ticks.get(date, []))
-        return []
+__all__ = ["InMemoryGateway"]
 
 
 SAMPLE_DAILY = {

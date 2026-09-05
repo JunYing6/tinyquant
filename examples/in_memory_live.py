@@ -13,7 +13,7 @@ if __package__ in {None, ""}:
 from engines.realtime import RealTimeTradeEngine
 from mock_quote_provider import InMemoryQuoteProvider  # type: ignore[import-not-found]
 from mock_trade_executor import InMemoryTradeExecutor  # type: ignore[import-not-found]
-from tools.data_getter.market.schema import DataRequest
+from tools.data import DataRequest
 from trading.factors.base import TickTimingFactor
 from trading.factors.types import ExecutionMode, ExecutionRequest, SignalIntent
 from trading.methods.base import BaseTimeSelection

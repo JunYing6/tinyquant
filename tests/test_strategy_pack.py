@@ -25,7 +25,7 @@ from trading.strategies.simple_strategies import (
     MomentumPickStrategy,
 )
 from trading.streams.multi_strategy import MultiStrategyStream
-from examples.multi_strategy.data import InMemoryCalendar, InMemoryStrategyData
+from examples.multi_strategy.data import InMemoryStrategyData
 from engines.fast import FastBacktestEngine
 
 
@@ -122,11 +122,10 @@ def test_empty_position_strategy_stays_empty_in_fast_backtest() -> None:
     strategy = EmptyPositionStrategy()
     engine = FastBacktestEngine(
         strategy,
-        data.calendar.dates[0],
-        data.calendar.dates[-1],
+        data._sessions[0].trading_date.strftime("%Y%m%d"),
+        data._sessions[-1].trading_date.strftime("%Y%m%d"),
         mode="fast",
-        data_provider=data,
-        calendar_provider=data.calendar,
+        data_gateway=data,
         progress_bar=False,
     )
     engine.run()

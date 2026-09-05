@@ -5,13 +5,15 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from datetime import datetime, time
+from dataclasses import replace
+from datetime import datetime, time, timezone
 from typing import Any, Mapping
 
 from engines.core.account import Account
 from engines.core.pipeline import UnifiedDataPipeline
 from engines.core.trading_adapter import TradingContractAdapter
-from tools.data_getter.providers import MarketDataProvider
+from tools.data import DataGateway
+from trading.market_events import market_event_from_dict
 from tools.real_trade.providers import QuoteProvider
 from tools.trade.providers import TradeExecutor
 from trading.strategies.base import BaseStrategy
@@ -32,7 +34,7 @@ class RealTimeTradeEngine:
         initial_capital: float = 1_000_000,
         trade_start_time: str = "09:30:00",
         trade_end_time: str = "14:55:00",
-        data_provider: MarketDataProvider | None = None,
+        data_gateway: DataGateway | None = None,
     ) -> None:
         if quote_provider is None:
             raise ValueError("quote_provider is required")
@@ -44,7 +46,7 @@ class RealTimeTradeEngine:
         self.quote_provider: QuoteProvider = quote_provider
         self.trade_executor: TradeExecutor = trade_executor
         self.initial_capital = float(initial_capital)
-        self.data_provider = data_provider
+        self.data_gateway = data_gateway
         self.trade_start_time = self._parse_time(trade_start_time)
         self.trade_end_time = self._parse_time(trade_end_time)
         self.is_stream = isinstance(entity, BaseStream)
@@ -52,8 +54,8 @@ class RealTimeTradeEngine:
         self.entity.set_account(self.account)
         self._adapter = TradingContractAdapter(entity)
         self._pipeline = (
-            UnifiedDataPipeline(self.entity, data_provider, self._adapter)
-            if data_provider is not None
+            UnifiedDataPipeline(self.entity, data_gateway, self._adapter)
+            if data_gateway is not None
             else None
         )
         self._running = False
@@ -121,10 +123,27 @@ class RealTimeTradeEngine:
             if isinstance(code, str) and isinstance(price, (int, float)) and price > 0:
                 self._last_prices[code] = float(price)
             before_positions = self.account.positions
-            self._adapter.feed_tick(tick_dict, self._current_date)
+            self._feed_market_event_from_quote(tick_dict, self._current_date)
             self._queue_position_delta(before_positions, tick_dict)
         except Exception:
             logger.exception("quote callback failed for code=%s time=%s", tick.get("code"), tick.get("time"))
+
+    def _feed_market_event_from_quote(self, tick: Mapping[str, Any], trade_date: str | None) -> None:
+        event = market_event_from_dict(tick)
+        trading_date = self._date_key(trade_date)
+        if trading_date is not None:
+            event_time = datetime.combine(
+                datetime.strptime(trading_date, "%Y%m%d").date(),
+                event.event_time.time(),
+                tzinfo=timezone.utc,
+            )
+            event = replace(
+                event,
+                effective_time=event_time,
+                event_time=event_time,
+                trading_date=event_time.date(),
+            )
+        self._adapter.feed_market_event(event)
 
     def _queue_position_delta(
         self, before_positions: Mapping[str, int], tick: Mapping[str, Any]

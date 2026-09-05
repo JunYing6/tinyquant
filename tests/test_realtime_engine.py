@@ -6,7 +6,7 @@ from typing import Any, Callable
 import pytest
 
 from engines.realtime import RealTimeTradeEngine
-from tools.data_getter.market.schema import DataRequest
+from tools.data import DataRequest
 from trading.factors.base import TickTimingFactor
 from trading.factors.types import ExecutionMode, ExecutionRequest, SignalIntent
 from trading.methods.base import BaseTimeSelection
@@ -55,7 +55,7 @@ class QueryingTickFactor(TickTimingFactor):
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
         self.sign["fit"] = True
-        return [DataRequest("market", "daily", {"date": "20240102"})]
+        return [{"scope": "market/daily", "params": {"date": "20240102"}}]
 
 
 class QueryingLiveStrategy(BaseStrategy):
@@ -141,13 +141,16 @@ class MockTradeExecutor:
         return {"success": True}
 
 
-class RecordingMarketProvider:
+class RecordingMarketGateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def fetch(self, request: DataRequest, date: str) -> list[dict[str, Any]]:
-        self.calls.append((request.scope, date))
-        return []
+    def read(self, request: DataRequest) -> object:
+        self.calls.append((request.dataset, request.as_of.strftime("%Y%m%d") if request.as_of else ""))
+        return None
+
+    def sessions(self, request: object) -> object:
+        return None
 
 
 TICK = {
@@ -226,19 +229,19 @@ def test_realtime_stream_submits_weighted_net_order() -> None:
 
 
 def test_realtime_engine_uses_optional_market_provider_for_daily_requirements() -> None:
-    provider = RecordingMarketProvider()
+    provider = RecordingMarketGateway()
     engine = RealTimeTradeEngine(
         QueryingLiveStrategy(),
         MockQuoteProvider([]),
         MockTradeExecutor(),
-        data_provider=provider,
+        data_gateway=provider,
     )
 
     engine.start()
     engine.stop()
 
     assert len(provider.calls) == 1
-    assert provider.calls[0][0] == "market/daily"
+    assert provider.calls[0][0] == "market.bar"
     assert len(provider.calls[0][1]) == 8
 
 

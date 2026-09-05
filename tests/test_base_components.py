@@ -7,7 +7,7 @@ import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
 from tools.data import DataRequest as CanonicalDataRequest
-from tools.data_getter.market.schema import DataRequest
+from tools.data import DataRequest
 from trading.factors.types import (
     ExecutionMode,
     ExecutionRequest,
@@ -85,7 +85,7 @@ class QueryFactor(BaseFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
         self.sign["fit"] = True
-        return [DataRequest("market", "daily", {"date": date, "fields": ["close"]})]
+        return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
         return pd.Series({"000001.SZ": 1.0})
@@ -94,7 +94,7 @@ class QueryFactor(BaseFactor):
 class NoClearFactor(BaseFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self.sign["fit"] = True
-        return [DataRequest("market", "daily", {"date": date, "fields": ["close"]})]
+        return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
         return pd.Series({"000001.SZ": float(len(data_cache))})
@@ -105,8 +105,8 @@ class DuplicateRequestFactor(BaseFactor):
         self._data_clear()
         self.sign["fit"] = True
         return [
-            DataRequest("market", "daily", {"date": date, "fields": ["close"]}),
-            DataRequest("market", "daily", {"date": date, "fields": ["volume"]}),
+            {"scope": "market/daily", "params": {"date": date, "fields": ["close"]}},
+            {"scope": "market/daily", "params": {"date": date, "fields": ["volume"]}},
         ]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
@@ -138,7 +138,7 @@ class RequestFormsFactor(BaseFactor):
         self.sign["fit"] = True
         params = {"date": date, "fields": ["close"]}
         if self.request_form == "data_request":
-            return [DataRequest("market", "daily", params, "request")]
+            return [{"scope": "market/daily", "params": params, "idx": "request"}]
         if self.request_form == "scope":
             return [{"scope": "market/daily", "params": params, "idx": "scope"}]
         if self.request_form == "domain_kind":
@@ -159,7 +159,7 @@ class BinaryFactor(BinarySelectionFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
         self.sign["fit"] = True
-        return [DataRequest("market", "daily", {"date": date, "fields": ["close"]})]
+        return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
         return pd.Series({"000001.SZ": 1, "000002.SZ": 0})
@@ -188,7 +188,7 @@ class FloatFactor(FloatSelectionFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
         self.sign["fit"] = True
-        return [DataRequest("market", "daily", {"date": date, "fields": ["close"]})]
+        return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
         return pd.Series({"000001.SZ": 2.0, "000002.SZ": 1.0})
@@ -218,7 +218,7 @@ class HistoryClearingKlineFactor(KlineTimingFactor):
         self._data_clear()
         self.sign["fit"] = True
         self.set_targets({"000001.SZ"})
-        return [DataRequest("market", "daily", {"date": date, "fields": ["close"]})]
+        return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
 
 class TickFactor(TickTimingFactor):

@@ -16,7 +16,7 @@ class FactoryContractError(ValueError):
 
 def load_backtest_factory(
     path: str,
-) -> tuple[BaseStrategy | BaseStream, Any, Any]:
+) -> tuple[BaseStrategy | BaseStream, Any]:
     module_name, separator, function_name = path.partition(":")
     if not separator or not module_name or not function_name or ":" in function_name:
         raise FactoryContractError("factory must use module:function")
@@ -37,13 +37,13 @@ def load_backtest_factory(
         value = factory()
     except Exception as error:
         raise FactoryContractError(f"factory {path} failed: {error}") from error
-    if not isinstance(value, tuple) or len(value) != 3:
-        raise FactoryContractError("factory must return a three-item tuple")
-    entity, provider, calendar = value
+    if not isinstance(value, tuple) or len(value) != 2:
+        raise FactoryContractError("factory must return a two-item tuple")
+    entity, data_gateway = value
     if not isinstance(entity, (BaseStrategy, BaseStream)):
         raise FactoryContractError("factory item 1 must be BaseStrategy or BaseStream")
-    if not callable(getattr(provider, "fetch", None)):
-        raise FactoryContractError("factory item 2 must implement fetch(request, date)")
-    if not callable(getattr(calendar, "get_trade_dates", None)):
-        raise FactoryContractError("factory item 3 must implement get_trade_dates(start, end)")
-    return entity, provider, calendar
+    if not callable(getattr(data_gateway, "read", None)):
+        raise FactoryContractError("factory item 2 must implement read(request)")
+    if not callable(getattr(data_gateway, "sessions", None)):
+        raise FactoryContractError("factory item 2 must implement sessions(request)")
+    return entity, data_gateway

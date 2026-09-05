@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
-from typing import Any
+from datetime import date, datetime, timedelta, timezone
 
-from tools.data_getter.market.schema import DataRequest
-
+from tools.data import Bar, InMemoryGateway, Session, TradingPhase
 
 CODES = ["000001.SZ", "000002.SZ", "600000.SH", "600036.SH", "600519.SH"]
 N_DAYS = 60
@@ -20,42 +18,22 @@ def _trade_dates() -> list[str]:
     return dates
 
 
-class InMemoryCalendar:
+class InMemoryStrategyData(InMemoryGateway):
     def __init__(self) -> None:
-        self.dates = _trade_dates()
+        bars: list[Bar] = []
+        sessions: list[Session] = []
+        for day in _trade_dates():
+            close = datetime.strptime(day, "%Y%m%d").replace(hour=15, tzinfo=timezone.utc)
+            phase = TradingPhase(name="regular", start=close.replace(hour=9), end=close, accepts_trades=True, accepts_quotes=True)
+            sessions.append(Session(market="CN", trading_date=close.date(), timezone="UTC", phases=(phase,)))
+            for code in CODES:
+                bars.append(Bar(schema_version="1", event_id=None, instrument_id=code, asset_type="equity", effective_time=close, event_time=close, available_at=close, trading_date=close.date(), source="demo", quality="valid", metadata={}, frequency="1d", interval_start=close, interval_end=close, open=10.0, high=11.0, low=9.5, close=10.5, volume=1000.0, turnover=10500.0, is_complete=True, price_basis="raw"))
+        super().__init__(bars=bars, sessions=sessions)
 
-    def get_trade_dates(self, start: str, end: str) -> list[str]:
-        return [date for date in self.dates if start <= date <= end]
-
-
-class InMemoryStrategyData:
-    def __init__(self) -> None:
-        self.calendar = InMemoryCalendar()
-        self._rows: dict[str, list[dict[str, Any]]] = {}
-        for date in self.calendar.dates:
-            self._rows[date] = [
-                {
-                    "code": code,
-                    "date": date,
-                    "open": 10.0,
-                    "high": 11.0,
-                    "low": 9.5,
-                    "close": 10.5,
-                    "volume": 1000,
-                    "amount": 10500.0,
-                }
-                for code in CODES
-            ]
-
-    def fetch(self, request: DataRequest, date: str) -> list[dict[str, Any]]:
-        if request.scope != "market/daily":
-            return []
-        codes = set(request.get("codes") or CODES)
-        return [row for row in self._rows.get(date, []) if row["code"] in codes]
 
 
 def demo_data() -> InMemoryStrategyData:
     return InMemoryStrategyData()
 
 
-__all__ = ["CODES", "InMemoryCalendar", "InMemoryStrategyData", "demo_data"]
+__all__ = ["CODES", "InMemoryStrategyData", "demo_data"]

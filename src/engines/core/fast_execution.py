@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from trading.factors.types import ExecutionRequest, KlineBar, SignalIntent
+from tools.data import Bar
+from trading.factors.types import ExecutionRequest, SignalIntent
 
 
 @dataclass
@@ -22,33 +23,26 @@ class FastExecutionAdapter:
             raise ValueError("fast execution timing must be open or close")
 
     def queue(self, intents: list[SignalIntent]) -> None:
-        for intent in intents:
-            self._queued.append(_QueuedIntent(intent, dict(self._seq)))
+        self._queued.extend(_QueuedIntent(intent, dict(self._seq)) for intent in intents)
 
-    def on_source_bar(self, bar: KlineBar) -> list[ExecutionRequest]:
-        self._seq[bar.code] = self._seq.get(bar.code, 0) + 1
+    def on_source_bar(self, bar: Bar) -> list[ExecutionRequest]:
+        if not isinstance(bar, Bar):
+            raise TypeError("source bar must be Bar")
+        code = bar.instrument_id
+        if code is None:
+            return []
+        self._seq[code] = self._seq.get(code, 0) + 1
         ready: list[ExecutionRequest] = []
         remaining: list[_QueuedIntent] = []
         for record in self._queued:
             intent = record.intent
-            if intent.code != bar.code or self._seq[bar.code] <= record.source_seq.get(bar.code, 0):
+            if intent.code != code or self._seq[code] <= record.source_seq.get(code, 0):
                 remaining.append(record)
                 continue
             timing = intent.execution_timing or self._timings[intent.action]
             if timing not in {"open", "close"}:
                 raise ValueError("intent execution_timing must be open or close")
-            ready.append(
-                ExecutionRequest(
-                    code=intent.code,
-                    action=intent.action,
-                    time=bar.end_time,
-                    price=bar.open if timing == "open" else bar.close,
-                    volume=intent.metadata.get("volume"),
-                    sizing_intent=intent.metadata.get("sizing_intent"),
-                    order_type=intent.metadata.get("order_type"),
-                    reason=intent.reason,
-                )
-            )
+            ready.append(ExecutionRequest(code=code, action=intent.action, time=bar.interval_end, price=bar.open if timing == "open" else bar.close, volume=intent.metadata.get("volume"), sizing_intent=intent.metadata.get("sizing_intent"), order_type=intent.metadata.get("order_type"), reason=intent.reason))
         self._queued = remaining
         return ready
 

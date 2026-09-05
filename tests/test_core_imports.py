@@ -25,7 +25,7 @@ def test_public_base_imports() -> None:
 
 def test_core_imports_do_not_load_excluded_runtime_modules() -> None:
     import engines
-    import tools.data_getter.providers
+    import tools.data
     import tools.real_trade.providers
     import tools.trade.providers
     import trading

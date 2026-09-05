@@ -77,6 +77,7 @@ from .replay import (
     session_open,
 )
 from .gateway import DataGateway
+from .memory import InMemoryGateway
 
 __all__ = [
     "AdapterDescriptor",
@@ -91,6 +92,7 @@ __all__ = [
     "DataError",
     "DataGapError",
     "DataGateway",
+    "InMemoryGateway",
     "DataGapEvent",
     "DataPolicy",
     "DataProvenance",

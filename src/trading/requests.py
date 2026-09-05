@@ -6,7 +6,6 @@ from datetime import date, datetime, timezone
 from typing import Any, Mapping
 
 from tools.data import DataBatch, DataRequest
-from tools.data_getter.market.schema import DataRequest as LegacyDataRequest
 
 
 def delivery_key(*parts: Any) -> str:
@@ -41,8 +40,6 @@ def _value(query: Mapping[str, Any], name: str, default: Any = None) -> Any:
 def canonical_request(query: Any, *, delivery_key: str | None = None, default_dataset: str | None = None) -> DataRequest:
     if isinstance(query, DataRequest):
         return replace(query, delivery_key=delivery_key or query.delivery_key) if delivery_key else query
-    if isinstance(query, LegacyDataRequest):
-        query = {"scope": query.scope, "params": dict(query.params), "idx": query.idx}
     if not isinstance(query, Mapping):
         raise TypeError(f"unsupported request: {query!r}")
     scope = query.get("scope", query.get("type"))

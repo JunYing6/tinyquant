@@ -15,11 +15,11 @@ def test_loader_returns_factory_tuple_from_module_path(monkeypatch) -> None:
     setattr(module, "build", build_demo_backtest)
     monkeypatch.setitem(sys.modules, "cli_fixture", module)
 
-    entity, provider, calendar = load_backtest_factory("cli_fixture:build")
+    entity, gateway = load_backtest_factory("cli_fixture:build")
 
     assert isinstance(entity, BaseStrategy)
-    assert callable(provider.fetch)
-    assert callable(calendar.get_trade_dates)
+    assert callable(gateway.read)
+    assert callable(gateway.sessions)
 
 
 @pytest.mark.parametrize("path", ["missing_separator", "cli_fixture:missing"])
@@ -35,7 +35,7 @@ def test_loader_rejects_non_tuple_return(monkeypatch) -> None:
     setattr(module, "build", lambda: BaseStrategy)
     monkeypatch.setitem(sys.modules, "bad_fixture", module)
 
-    with pytest.raises(FactoryContractError, match="three-item tuple"):
+    with pytest.raises(FactoryContractError, match="two-item tuple"):
         load_backtest_factory("bad_fixture:build")
 
 

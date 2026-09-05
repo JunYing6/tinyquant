@@ -133,7 +133,7 @@ class BaseStrategy:
     def continue_pipeline(self, date: datetime) -> List[Any]:
         if self.selector is not None and not self.selector.check_data():
             return [
-                coerce_data_request(query).with_params(source="selector")
+                with_routing(canonical_request(query), source="selector")
                 for query in self.selector.get_queries(date)
             ]
         if not self._daily_pipeline_triggered and self._is_pipeline_ready():

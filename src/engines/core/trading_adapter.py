@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any, Mapping
 
 from engines.core.kline_aggregator import KlineAggregator
 from tools.data import Bar, MarketEvent, QuoteTick, RegisteredEvent, TradeTick
 from trading.factors.types import KlineBar
-from trading.market_events import kline_bar_to_bar, market_event_from_dict
+from trading.market_events import market_event_from_dict
 from trading.strategies.base import BaseStrategy
 
 
@@ -97,19 +96,6 @@ class TradingContractAdapter:
                         "filled_volume": order.filled_volume,
                     }
                 )
-
-    def feed_tick(self, tick: Mapping[str, Any], trade_date: Any = None) -> None:
-        """Temporary dict compatibility for fast/realtime; remove in Task 8/9."""
-        event = market_event_from_dict(tick)
-        if trade_date is not None:
-            trading_date = self._date_key(trade_date)
-            event_time = event.event_time.astimezone(timezone.utc).replace(
-                year=trading_date.year,
-                month=trading_date.month,
-                day=trading_date.day,
-            )
-            event = replace(event, effective_time=event_time, event_time=event_time, trading_date=trading_date)
-        self.feed_market_event(event)
 
     def feed_execution_tick(self, tick: Mapping[str, Any]) -> None:
         self._current_date = self._tick_date(tick) or self._current_date
