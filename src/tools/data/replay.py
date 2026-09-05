@@ -1,4 +1,4 @@
-"""Deterministic market-event replay: clocks, ordering, dedup and delivery.
+r"""Deterministic market-event replay: clocks, ordering, dedup and delivery.
 
 Task 5 of the unified data-extension interface.  This module turns an
 unordered / duplicated upstream event stream into a deterministic, monotonic
@@ -174,7 +174,7 @@ def _normalize_sequence(seq) -> tuple[int, object]:
 
 
 def _seq_sort_key(event):
-    """Sort key ``(event_time, sequence_class, sequence_value)`` for an event.
+    r"""Sort key ``(event_time, sequence_class, sequence_value)`` for an event.
 
     Raises :class:`ValueError` for a negative numeric sequence -- the ordering a
     :math:`(event\_time, sequence)` sort establishes is undefined once sequence
@@ -201,7 +201,7 @@ def _check_sequence_non_negative(event) -> None:
 
 
 def sequence_events(events, ordering: str = "none", strict: bool = True) -> Iterator[MarketEvent]:
-    """Impose :math:`(event\_time, sequence)` ordering over a stream.
+    r"""Impose :math:`(event\_time, sequence)` ordering over a stream.
 
     * ``none`` -- no ordering guarantee: yields events unchanged.
     * ``per_instrument`` -- each instrument's events are ordered internally;
