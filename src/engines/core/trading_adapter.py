@@ -6,7 +6,9 @@ from datetime import date, datetime
 from typing import Any, Mapping
 
 from engines.core.kline_aggregator import KlineAggregator
+from tools.data import Bar, MarketEvent, QuoteTick, RegisteredEvent, TradeTick
 from trading.factors.types import KlineBar
+from trading.market_events import kline_bar_to_bar, market_event_from_dict
 from trading.strategies.base import BaseStrategy
 
 
@@ -59,17 +61,31 @@ class TradingContractAdapter:
         if hasattr(self.entity, "set_skip_children"):
             self.entity.set_skip_children(self._skip_names)
 
-    def feed_tick(self, tick: Mapping[str, Any], trade_date: Any = None) -> None:
-        tick_dict = dict(tick)
-        self._current_date = self._tick_date(tick) or self._date_key(trade_date)
+    def feed_market_event(self, event: MarketEvent) -> None:
+        if isinstance(event, RegisteredEvent):
+            return
+        self._current_date = event.trading_date or self._current_date
         for (name, _), aggregator in self._aggregators.items():
-            if name not in self._skip_names:
-                aggregator.feed_tick(tick_dict)
-        self.entity.on_tick(tick_dict)
+            if name in self._skip_names:
+                continue
+            if isinstance(event, TradeTick):
+                aggregator.feed_trade(event)
+        if isinstance(event, TradeTick):
+            if hasattr(self.entity, "on_trade"):
+                self.entity.on_trade(event)
+            else:
+                self.entity.on_tick({"code": event.instrument_id, "time": event.event_time.strftime("%H:%M:%S"), "price": event.price, "volume": event.size, "amount": event.turnover})
+        elif isinstance(event, QuoteTick):
+            if hasattr(self.entity, "on_quote"):
+                self.entity.on_quote(event)
         for strategy in self.strategies:
             if strategy.strategy_name in self._skip_names or strategy.tick_matcher is None:
                 continue
-            for order in strategy.tick_matcher.match(tick_dict, self._current_date):
+            if hasattr(strategy.tick_matcher, "match_event"):
+                matches = strategy.tick_matcher.match_event(event, self._current_date)
+            else:
+                matches = strategy.tick_matcher.match({"code": event.instrument_id, "time": event.event_time, "price": getattr(event, "price", None)}, self._current_date)
+            for order in matches:
                 strategy.handle_order_event(
                     {
                         "order_id": order.order_id,
@@ -78,6 +94,13 @@ class TradingContractAdapter:
                         "filled_volume": order.filled_volume,
                     }
                 )
+
+    def feed_tick(self, tick: Mapping[str, Any], trade_date: Any = None) -> None:
+        """Temporary dict compatibility for fast/realtime; remove in Task 8/9."""
+        event = market_event_from_dict(tick)
+        if trade_date is not None:
+            self._current_date = self._date_key(trade_date)
+        self.feed_market_event(event)
 
     def feed_execution_tick(self, tick: Mapping[str, Any]) -> None:
         self._current_date = self._tick_date(tick) or self._current_date
@@ -103,10 +126,10 @@ class TradingContractAdapter:
             if name not in self._skip_names and subscribed == frequency:
                 aggregator.feed_prebuilt_bars(bars)
 
-    def feed_daily_bar(self, bar: KlineBar) -> None:
-        if not isinstance(bar, KlineBar) or bar.frequency != "1d":
-            raise ValueError("daily source must be a 1d KlineBar")
-        self._current_date = self._date_key(bar.end_time)
+    def feed_daily_bar(self, bar: Bar) -> None:
+        if not isinstance(bar, Bar) or bar.frequency != "1d":
+            raise ValueError("daily source must be a 1d Bar")
+        self._current_date = self._date_key(bar.interval_end)
         for (name, frequency), aggregator in self._aggregators.items():
             if name not in self._skip_names and frequency.endswith("d"):
                 aggregator.feed_daily(bar)

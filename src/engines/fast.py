@@ -18,6 +18,7 @@ from engines.core.trading_adapter import TradingContractAdapter
 from tools.data_getter.market.schema import DataRequest
 from tools.data_getter.providers import MarketDataProvider, TradingCalendarProvider
 from trading.factors.types import ExecutionRequest, KlineBar
+from trading.market_events import kline_bar_to_bar
 from trading.strategies.base import BaseStrategy
 from trading.streams.base import BaseStream
 
@@ -131,7 +132,7 @@ class FastBacktestEngine:
             for strategy in self._strategies:
                 requests = self._fast_adapters[strategy.strategy_name].on_source_bar(bar)
                 strategy._pending_orders.extend(self._apply_slippage(requests))
-            self._adapter.feed_daily_bar(bar)
+            self._adapter.feed_daily_bar(kline_bar_to_bar(bar))
             for strategy in self._strategies:
                 intents = list(strategy.timer.pending_intents)
                 if intents:

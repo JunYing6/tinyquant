@@ -227,6 +227,12 @@ class BaseStrategy:
             self._apply_risk_decision(self.risk_ctrl.on_bar(bar))
         return self.timer.kline_bar_input(bar)
 
+    def on_trade(self, trade: Any) -> List[tuple]:
+        return self.on_tick({"code": trade.instrument_id, "time": trade.event_time.strftime("%H:%M:%S"), "price": trade.price, "volume": trade.size, "amount": trade.turnover})
+
+    def on_quote(self, quote: Any) -> List[tuple]:
+        return []
+
     def on_tick(self, tick: Dict[str, Any]) -> List[tuple]:
         active_request_keys = self._active_request_keys()
         active_sell_codes = self._active_sell_codes()

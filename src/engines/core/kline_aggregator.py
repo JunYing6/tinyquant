@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any, Callable, Mapping
 
+from tools.data import Bar, TradeTick
 from trading.factors.types import KlineBar, normalize_frequency
 
 
@@ -63,13 +64,26 @@ class KlineAggregator:
     def is_prebuilt_mode(self) -> bool:
         return self._prebuilt_mode
 
-    def feed_tick(self, tick: Mapping[str, Any]) -> None:
+    def feed_trade(self, trade: TradeTick) -> None:
+        if not isinstance(trade, TradeTick):
+            raise TypeError("KlineAggregator.feed_trade requires TradeTick")
         if self._prebuilt_mode:
             return
-        parsed = self._parse_tick(tick)
-        if parsed is None:
-            return
+        parsed = (trade.instrument_id, *self._parse_time(trade.event_time), trade.price, trade.size, trade.turnover)
         code, minute, second, trade_date, price, volume, amount = parsed
+        self._feed_parsed(code, minute, second, trade_date, price, volume, amount)
+
+    def feed_tick(self, tick: Mapping[str, Any]) -> None:
+        """Temporary dict compatibility for fast/realtime; remove in Task 8/9."""
+        from trading.market_events import market_event_from_dict
+        event = market_event_from_dict(tick)
+        if not isinstance(event, TradeTick):
+            raise TypeError("KlineAggregator.feed_tick requires a trade dict")
+        self.feed_trade(event)
+
+    def _feed_parsed(self, code: str, minute: int, second: int, trade_date: date | None, price: float, volume: float, amount: float) -> None:
+        if self._prebuilt_mode:
+            return
         previous = self._last_tick_seconds.get(code)
         if previous is not None and second < previous:
             raise ValueError(f"out-of-order tick for {code}")
@@ -133,10 +147,11 @@ class KlineAggregator:
             self._validate_daily_bar(bar)
             self._accept_daily(bar, self._date_key(bar.end_time), emit=False)
 
-    def feed_daily(self, bar: KlineBar) -> None:
+    def feed_daily(self, bar: Bar) -> None:
         self._require_daily_target()
         self._validate_daily_bar(bar)
-        self._accept_daily(bar, self._date_key(bar.end_time))
+        source = KlineBar(bar.instrument_id or "", bar.frequency, bar.interval_end, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.turnover)
+        self._accept_daily(source, self._date_key(source.end_time))
 
     def feed_prebuilt_bar(self, bar: KlineBar) -> None:
         if not isinstance(bar, KlineBar):
@@ -196,9 +211,9 @@ class KlineAggregator:
         if self._unit != "d":
             raise ValueError("operation requires a daily frequency")
 
-    def _validate_daily_bar(self, bar: KlineBar) -> None:
-        if not isinstance(bar, KlineBar) or bar.frequency != "1d":
-            raise ValueError("daily source must be a 1d KlineBar")
+    def _validate_daily_bar(self, bar: Bar) -> None:
+        if not isinstance(bar, Bar) or bar.frequency != "1d":
+            raise ValueError("daily source must be a 1d Bar")
 
     def _intraday_end(self, minute: int) -> str:
         interval = self._interval * (60 if self._unit == "h" else 1)

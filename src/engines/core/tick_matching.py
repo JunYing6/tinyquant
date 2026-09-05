@@ -8,6 +8,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Callable, Mapping
 
+from tools.data import MarketEvent, QuoteTick, TradeTick
 from trading.factors.types import ExecutionMode, ExecutionRequest
 
 
@@ -43,11 +44,16 @@ class TickMatchingEngine:
         self,
         account_order: Callable[[list[tuple]], Any],
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        match_mode: str = "quote_or_last",
     ) -> None:
         self._account_order = account_order
         self._event_sink = event_sink
         self._orders: dict[str, MatchingOrder] = {}
         self._pending: list[str] = []
+        if match_mode not in {"quote_or_last", "last_trade_only", "quote_only"}:
+            raise ValueError("invalid match_mode")
+        self.match_mode = match_mode
+        self._quote_state: dict[str, QuoteTick] = {}
 
     def begin_day(self, trade_date: Any) -> None:
         current = self._date_key(trade_date)
@@ -115,7 +121,25 @@ class TickMatchingEngine:
         self._emit(order, "SUBMITTED")
         return order
 
+    def match_event(self, event: MarketEvent, trade_date: Any) -> list[MatchingOrder]:
+        if isinstance(event, QuoteTick):
+            self._quote_state[event.instrument_id] = event
+        if not isinstance(event, (TradeTick, QuoteTick)):
+            return []
+        matched: list[MatchingOrder] = []
+        tick = {"code": event.instrument_id, "time": event.event_time, "price": getattr(event, "price", getattr(event, "last_price", None)), "ask1_price": event.ask_levels[0].price if isinstance(event, QuoteTick) and event.ask_levels else None, "bid1_price": event.bid_levels[0].price if isinstance(event, QuoteTick) and event.bid_levels else None}
+        if isinstance(event, QuoteTick) and self.match_mode == "last_trade_only":
+            return []
+        if isinstance(event, TradeTick) and self.match_mode == "quote_only":
+            return []
+        return self._match_dict(tick, trade_date)
+
     def match(self, tick: Mapping[str, Any], trade_date: Any) -> list[MatchingOrder]:
+        """Temporary dict compatibility; remove in Task 8/9."""
+        from trading.market_events import market_event_from_dict
+        return self.match_event(market_event_from_dict(tick), trade_date)
+
+    def _match_dict(self, tick: Mapping[str, Any], trade_date: Any) -> list[MatchingOrder]:
         matched: list[MatchingOrder] = []
         current = self._date_key(trade_date)
         for order_id in list(self._pending):
