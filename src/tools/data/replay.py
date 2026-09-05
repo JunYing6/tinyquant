@@ -133,6 +133,10 @@ class LiveClock:
     def now(self) -> datetime:
         return self._now
 
+    def as_of(self) -> datetime:
+        """Return the current instant (same as :attr:`now`)."""
+        return self._now
+
     def update(self, observed_time: datetime) -> None:
         """Advance to an observed timestamp, clamping to stay monotonic."""
         if observed_time > self._now:

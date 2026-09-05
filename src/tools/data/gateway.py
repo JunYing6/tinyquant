@@ -244,6 +244,10 @@ class DataGateway:
     def is_open(self) -> bool:
         return self._open
 
+    @property
+    def data_policy(self) -> DataPolicy:
+        return self._policy
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

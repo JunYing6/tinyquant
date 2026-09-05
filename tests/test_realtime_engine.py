@@ -1,18 +1,123 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Callable
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
 from engines.realtime import RealTimeTradeEngine
-from tools.data import DataRequest
+from tools.data import (
+    DataGapError,
+    DataGapEvent,
+    DataPolicy,
+    InMemoryGateway,
+    LiveClock,
+    QuoteTick,
+    StreamRequest,
+    Subscription,
+    TradeTick,
+    TradingPhase,
+    UnsupportedDatasetError,
+)
 from trading.factors.base import TickTimingFactor
 from trading.factors.types import ExecutionMode, ExecutionRequest, SignalIntent
 from trading.methods.base import BaseTimeSelection
+from trading.methods.selector import FixedStockPicking
 from trading.minds.base import BaseMind
 from trading.strategies.base import BaseStrategy
 from trading.streams.base import BaseStream
+
+
+def _day(offset: int = 0) -> str:
+    return (datetime.now(timezone.utc).date() + timedelta(days=offset)).strftime("%Y%m%d")
+
+
+def _instant(day: str, clock: str = "00:00:00") -> datetime:
+    return datetime.strptime(f"{day} {clock}", "%Y%m%d %H:%M:%S").replace(tzinfo=timezone.utc)
+
+
+def _session(day: str, start: str = "09:00:00", end: str = "15:00:00") -> object:
+    phase = TradingPhase(
+        name="regular",
+        start=_instant(day, start),
+        end=_instant(day, end),
+        accepts_trades=True,
+        accepts_quotes=True,
+    )
+    from tools.data import Session
+
+    return Session(market="CN", trading_date=_instant(day).date(), timezone="UTC", phases=(phase,))
+
+
+def _trade(day: str = _day(), clock: str = "09:31:00", price: float = 10.0, code: str = "000001.SZ") -> TradeTick:
+    return TradeTick(
+        schema_version="1",
+        event_id=None,
+        instrument_id=code,
+        asset_type="equity",
+        effective_time=_instant(day, clock),
+        event_time=_instant(day, clock),
+        available_at=None,
+        trading_date=_instant(day).date(),
+        source="test",
+        quality="valid",
+        metadata={},
+        event_type="trade",
+        price=price,
+        size=100.0,
+        turnover=price * 100,
+        side="UNKNOWN",
+        sequence=None,
+    )
+
+
+def _quote(day: str = _day(), clock: str = "09:31:00", last: float = 10.0, code: str = "000001.SZ") -> QuoteTick:
+    from tools.data import PriceLevel
+
+    return QuoteTick(
+        schema_version="1",
+        event_id=None,
+        instrument_id=code,
+        asset_type="equity",
+        effective_time=_instant(day, clock),
+        event_time=_instant(day, clock),
+        available_at=None,
+        trading_date=_instant(day).date(),
+        source="test",
+        quality="valid",
+        metadata={},
+        event_type="quote",
+        bid_levels=(PriceLevel(price=last - 0.01, size=100.0, level=1),),
+        ask_levels=(PriceLevel(price=last + 0.01, size=100.0, level=1),),
+        last_price=last,
+        last_size=100.0,
+        sequence=None,
+    )
+
+
+def _gap(day: str = _day(), clock: str = "10:00:00", reason: str = "missing data") -> DataGapEvent:
+    return DataGapEvent(
+        dataset="market.trade",
+        instrument_id=None,
+        detected_at=_instant(day, clock),
+        from_position=None,
+        to_position=None,
+        recoverable=True,
+        reason=reason,
+    )
+
+
+def _state(day: str = _day(), clock: str = "10:00:00", state: str = "error") -> object:
+    from tools.data import DataSourceStateEvent
+
+    return DataSourceStateEvent(
+        dataset="market.trade",
+        source="test",
+        state=state,
+        occurred_at=_instant(day, clock),
+        error=None,
+    )
 
 
 class DirectLiveBuyFactor(TickTimingFactor):
@@ -20,7 +125,7 @@ class DirectLiveBuyFactor(TickTimingFactor):
         super().__init__("live-buy")
         self.fired = False
 
-    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
+    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[Any]:
         self._data_clear()
         self.sign["fit"] = True
         return []
@@ -44,15 +149,19 @@ class DirectLiveBuyFactor(TickTimingFactor):
 
 
 class LiveStrategy(BaseStrategy):
-    def __init__(self, name: str = "live") -> None:
-        super().__init__(name, timer=BaseTimeSelection(f"{name}-timer", [], [DirectLiveBuyFactor()]))
+    def __init__(self, name: str = "live", code: str = "000001.SZ") -> None:
+        super().__init__(
+            name,
+            selector=FixedStockPicking([code]),
+            timer=BaseTimeSelection(f"{name}-timer", [], [DirectLiveBuyFactor()]),
+        )
 
 
 class QueryingTickFactor(TickTimingFactor):
     def __init__(self) -> None:
         super().__init__("querying-tick")
 
-    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
+    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[Any]:
         self._data_clear()
         self.sign["fit"] = True
         return [{"scope": "market/daily", "params": {"date": "20240102"}}]
@@ -60,7 +169,11 @@ class QueryingTickFactor(TickTimingFactor):
 
 class QueryingLiveStrategy(BaseStrategy):
     def __init__(self) -> None:
-        super().__init__("querying-live", timer=BaseTimeSelection("querying-timer", [], [QueryingTickFactor()]))
+        super().__init__(
+            "querying-live",
+            selector=FixedStockPicking(["000001.SZ"]),
+            timer=BaseTimeSelection("querying-timer", [], [QueryingTickFactor()]),
+        )
 
 
 class EqualMind(BaseMind):
@@ -68,30 +181,6 @@ class EqualMind(BaseMind):
         self, market_data: dict[str, Any], strategies_performance: dict[str, dict[str, float]]
     ) -> dict[str, float]:
         return {name: 1.0 for name in strategies_performance}
-
-
-class MockQuoteProvider:
-    def __init__(self, ticks: list[dict[str, Any]]) -> None:
-        self.ticks = ticks
-        self.events: list[str] = []
-        self.subscriptions: list[str] = []
-        self.on_tick: Callable[[dict[str, Any]], None] | None = None
-
-    def subscribe(
-        self, codes: list[str], on_tick: Callable[[dict[str, Any]], None]
-    ) -> None:
-        self.events.append("subscribe")
-        self.subscriptions = list(codes)
-        self.on_tick = on_tick
-
-    def start(self) -> None:
-        self.events.append("start")
-        assert self.on_tick is not None
-        for tick in self.ticks:
-            self.on_tick(tick)
-
-    def stop(self) -> None:
-        self.events.append("stop")
 
 
 class MockTradeExecutor:
@@ -141,117 +230,249 @@ class MockTradeExecutor:
         return {"success": True}
 
 
-class RecordingMarketGateway:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+class RecordingGateway(InMemoryGateway):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.requests: list[StreamRequest] = []
+        self.reads: list[Any] = []
 
-    def read(self, request: DataRequest) -> object:
-        self.calls.append((request.dataset, request.as_of.strftime("%Y%m%d") if request.as_of else ""))
-        return None
+    def subscribe(self, request: StreamRequest, sink: Any, control_sink: Any = None) -> Subscription:
+        self.requests.append(request)
+        return super().subscribe(request, sink, control_sink)
 
-    def sessions(self, request: object) -> object:
-        return None
-
-
-TICK = {
-    "code": "000001.SZ",
-    "trade_date": "20240102",
-    "time": "09:31:00",
-    "price": 10.0,
-    "volume": 100,
-    "amount": 1_000,
-}
+    def read(self, request: Any) -> Any:
+        self.reads.append(request)
+        return super().read(request)
 
 
-def test_realtime_engine_requires_quote_and_trade_providers() -> None:
-    with pytest.raises(ValueError, match="quote_provider"):
-        RealTimeTradeEngine(LiveStrategy(), None, MockTradeExecutor())
+def _engine(strategy: BaseStrategy | BaseStream, trader: MockTradeExecutor, gateway: RecordingGateway, **kwargs: Any) -> RealTimeTradeEngine:
+    return RealTimeTradeEngine(strategy, data_gateway=gateway, trade_executor=trader, initial_capital=100_000, **kwargs)
+
+
+def _day_gateway(day: str, events: list[Any] | None = None, gap_action: str = "continue") -> RecordingGateway:
+    return RecordingGateway(
+        events=events or [],
+        sessions=[_session(day)],
+        data_policy=DataPolicy(gap_action=gap_action),
+    )
+
+
+def test_realtime_engine_requires_gateway_and_trade_executor() -> None:
+    with pytest.raises(ValueError, match="data_gateway"):
+        RealTimeTradeEngine(LiveStrategy(), data_gateway=None, trade_executor=MockTradeExecutor())
 
     with pytest.raises(ValueError, match="trade_executor"):
-        RealTimeTradeEngine(LiveStrategy(), MockQuoteProvider([]), None)
+        RealTimeTradeEngine(LiveStrategy(), data_gateway=RecordingGateway(), trade_executor=None)
 
 
-def test_realtime_engine_connects_processes_tick_and_stops() -> None:
-    quote = MockQuoteProvider([TICK])
+def test_realtime_engine_subscribes_canonical_streams_and_syncs_account() -> None:
+    gateway = _day_gateway(_day())
     trader = MockTradeExecutor()
-    engine = RealTimeTradeEngine(
-        LiveStrategy(),
-        quote_provider=quote,
-        trade_executor=trader,
-        initial_capital=100_000,
-    )
+    engine = _engine(LiveStrategy(), trader, gateway)
 
     engine.start()
     engine.stop()
 
+    datasets = [request.dataset for request in gateway.requests]
+    assert datasets == ["market.trade", "market.quote"]
+    assert all(request.instruments == ("000001.SZ",) for request in gateway.requests)
     assert trader.events[:2] == ["connect", "get_account"]
-    assert quote.events == ["subscribe", "start", "stop"]
-    assert trader.orders == [("BUY", "000001.SZ", 100, 10.0)]
     assert trader.events[-1] == "disconnect"
 
 
-def test_realtime_engine_logs_order_failure_without_retry(caplog: pytest.LogCaptureFixture) -> None:
-    quote = MockQuoteProvider([TICK])
-    trader = MockTradeExecutor(fail_orders=True)
-    engine = RealTimeTradeEngine(LiveStrategy(), quote, trader)
+def test_realtime_engine_places_order_from_trade_tick() -> None:
+    gateway = _day_gateway(_day())
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    engine.start()
+    gateway.emit(_trade())
+    engine.stop()
+
+    assert trader.orders == [("BUY", "000001.SZ", 100, 10.0)]
+
+
+def test_realtime_engine_ignores_events_outside_session_phases() -> None:
+    gateway = _day_gateway(_day())
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    engine.start()
+    gateway.emit(_trade(clock="16:00:00"))
+    engine.stop()
+
+    assert trader.orders == []
+
+
+def test_realtime_engine_tracks_last_prices_from_quote_ticks() -> None:
+    gateway = _day_gateway(_day())
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    engine.start()
+    gateway.emit(_quote())
+    engine.stop()
+
+    assert engine._last_prices["000001.SZ"] == 10.0
+    assert trader.orders == []
+
+
+def test_realtime_engine_uses_optional_poll_path_into_shared_handler() -> None:
+    gateway = RecordingGateway(
+        events=[_trade()],
+        sessions=[_session(_day())],
+        data_policy=DataPolicy(gap_action="continue"),
+    )
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    engine.start()
+    engine.drain_poll(StreamRequest(dataset="market.trade", instruments=("000001.SZ",), correlation_id="poll"))
+    engine.stop()
+
+    assert trader.orders == [("BUY", "000001.SZ", 100, 10.0)]
+
+
+def test_realtime_engine_fails_clearly_when_quote_capability_is_missing() -> None:
+    class NoQuoteGateway(RecordingGateway):
+        def subscribe(self, request: StreamRequest, sink: Any, control_sink: Any = None) -> Subscription:
+            if request.dataset == "market.quote":
+                raise UnsupportedDatasetError("no quote capability", dataset="market.quote")
+            return super().subscribe(request, sink, control_sink)
+
+    gateway = NoQuoteGateway(sessions=[_session(_day())], data_policy=DataPolicy())
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    with pytest.raises(UnsupportedDatasetError):
+        engine.start()
+
+    assert engine._running is False
+    assert "disconnect" in trader.events
+
+
+def test_realtime_engine_builds_live_clock_from_session() -> None:
+    day = _day()
+    gateway = _day_gateway(day)
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
 
     engine.start()
     engine.stop()
 
-    assert trader.events.count("buy") == 1
-    assert "broker offline" in caplog.text
-    assert engine.account.positions == {}
-
-
-def test_realtime_engine_treats_rejected_executor_result_as_failure(caplog: pytest.LogCaptureFixture) -> None:
-    quote = MockQuoteProvider([TICK])
-    trader = MockTradeExecutor(reject_orders=True)
-    engine = RealTimeTradeEngine(LiveStrategy(), quote, trader)
-
-    engine.start()
-    engine.stop()
-
-    assert trader.events.count("buy") == 1
-    assert engine.account.positions == {}
-    assert "rejected order" in caplog.text
+    assert isinstance(engine._clock, LiveClock)
+    assert engine._clock.session.trading_date == datetime.now(timezone.utc).date()
+    assert engine._clock.now == _instant(day, "09:00:00")
 
 
 def test_realtime_stream_submits_weighted_net_order() -> None:
     stream = BaseStream("live-stream", [LiveStrategy("child")], EqualMind())
-    quote = MockQuoteProvider([TICK])
+    gateway = _day_gateway(_day())
     trader = MockTradeExecutor()
-    engine = RealTimeTradeEngine(stream, quote, trader)
+    engine = _engine(stream, trader, gateway)
 
     engine.start()
+    gateway.emit(_trade())
     engine.stop()
 
     assert trader.orders == [("BUY", "000001.SZ", 100, 10.0)]
 
 
-def test_realtime_engine_uses_optional_market_provider_for_daily_requirements() -> None:
-    provider = RecordingMarketGateway()
-    engine = RealTimeTradeEngine(
-        QueryingLiveStrategy(),
-        MockQuoteProvider([]),
-        MockTradeExecutor(),
-        data_gateway=provider,
-    )
-
-    engine.start()
-    engine.stop()
-
-    assert len(provider.calls) == 1
-    assert provider.calls[0][0] == "market.bar"
-    assert len(provider.calls[0][1]) == 8
-
-
-def test_realtime_engine_ignores_ticks_outside_trading_window() -> None:
-    after_close = {**TICK, "time": "15:01:00"}
-    quote = MockQuoteProvider([after_close])
+def test_realtime_engine_loads_daily_history_from_gateway() -> None:
+    day = _day()
+    gateway = _day_gateway(day)
     trader = MockTradeExecutor()
-    engine = RealTimeTradeEngine(LiveStrategy(), quote, trader)
+    engine = _engine(QueryingLiveStrategy(), trader, gateway)
 
     engine.start()
     engine.stop()
 
+    assert any(getattr(request, "dataset", None) == "market.bar" for request in gateway.reads)
+
+
+def test_realtime_engine_pause_and_resume_via_data_source_state() -> None:
+    gateway = _day_gateway(_day(), gap_action="pause")
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    engine.start()
+    gateway.emit(_state(state="error"))
+    assert engine._paused is True
+
+    gateway.emit(_trade())
     assert trader.orders == []
+
+    gateway.emit(_state(state="healthy"))
+    assert engine._paused is False
+
+    gateway.emit(_trade())
+    engine.stop()
+
+    assert trader.orders == [("BUY", "000001.SZ", 100, 10.0)]
+
+
+def test_realtime_engine_continues_on_gap_under_continue_policy() -> None:
+    received: list[Any] = []
+    gateway = _day_gateway(_day(), gap_action="continue")
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway, control_callback=received.append)
+
+    engine.start()
+    gateway.emit(_gap())
+    assert engine._running is True
+    assert engine._gap_error is None
+    assert received and isinstance(received[0], DataGapEvent)
+    engine.stop()
+
+
+def test_realtime_engine_stops_on_gap_under_raise_policy() -> None:
+    gateway = _day_gateway(_day(), gap_action="raise")
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    engine.start()
+    gateway.emit(_gap())
+
+    assert engine._running is False
+    assert isinstance(engine._gap_error, DataGapError)
+    assert "disconnect" in trader.events
+    assert all(subscription.state == "cancelled" for subscription in engine._subscriptions.values())
+
+    engine.stop()
+
+
+def test_realtime_engine_stop_cancels_subscriptions_and_ignores_after() -> None:
+    gateway = _day_gateway(_day())
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    engine.start()
+    assert all(subscription.state == "active" for subscription in engine._subscriptions.values())
+
+    engine.stop()
+
+    assert all(subscription.state == "cancelled" for subscription in engine._subscriptions.values())
+    assert trader.orders == []
+    gateway.emit(_trade())
+    assert trader.orders == []
+
+
+def test_realtime_engine_rolls_day_with_settle_and_rebuilt_session() -> None:
+    first = _day()
+    second = _day(offset=1)
+    gateway = RecordingGateway(
+        events=[],
+        sessions=[_session(first), _session(second)],
+        data_policy=DataPolicy(gap_action="continue"),
+    )
+    trader = MockTradeExecutor()
+    engine = _engine(LiveStrategy(), trader, gateway)
+
+    engine.start()
+    gateway.emit(_trade(day=first))
+    gateway.emit(_trade(day=second))
+    engine.stop()
+
+    assert engine._current_date == datetime.now(timezone.utc).date() + timedelta(days=1)
+    assert engine._clock.session.trading_date == datetime.now(timezone.utc).date() + timedelta(days=1)
+    assert trader.orders == [("BUY", "000001.SZ", 100, 10.0)]
