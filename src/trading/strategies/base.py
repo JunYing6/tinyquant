@@ -7,7 +7,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from tools.data_getter.market.schema import coerce_data_request
+from tools.data import DataBatch, DataRequest
+from trading.requests import canonical_request, decode_routing, table_records, with_routing
 from trading.factors.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
 from trading.methods.base import BaseRiskControl, BaseStockPicking, BaseTimeSelection, RiskDecision, StrategyContext
 
@@ -73,6 +74,10 @@ class BaseStrategy:
         self.order_events: List[dict[str, Any]] = []
         self.tick_matcher: Any = None
 
+    @staticmethod
+    def table_records(batch: DataBatch) -> tuple:
+        return table_records(batch)
+
     @property
     def current_positions(self) -> Dict[str, int]:
         if self.account is None:
@@ -98,23 +103,24 @@ class BaseStrategy:
                 continue
             for query in component.get_queries(date):
                 requirements.append(
-                    coerce_data_request(query).with_params(source=source)
+                    with_routing(canonical_request(query), source=source)
                 )
         if self.timer is not None:
             for query in self.timer.get_history_requirements(date):
                 requirements.append(
-                    coerce_data_request(query).with_params(source="timer_history")
+                    with_routing(canonical_request(query), source="timer_history")
                 )
         return requirements
 
-    def receive_data(self, sign: Dict[str, Any], data: Any) -> None:
+    def receive_data(self, batch: DataBatch, delivery_key: str | None = None) -> None:
+        sign = {**(decode_routing(delivery_key or batch.request_id) or {})}
         source = sign.get("source")
         if not isinstance(source, str):
             return
         component = {"selector": self.selector, "timer": self.timer, "timer_history": self.timer, "risk": self.risk_ctrl}.get(source)
         if component is None:
             return
-        component.receive_data(sign, data)
+        component.receive_data(sign, batch)
         if not self._daily_pipeline_triggered and self._is_pipeline_ready():
             self._run_daily_pipeline()
 

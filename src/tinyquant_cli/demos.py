@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tools.data_getter.market.schema import DataRequest
+from tools.data import DataRequest, TableBatch
 from trading.factors.base import KlineTimingFactor, TickTimingFactor
 from trading.factors.types import KlineBar, SignalIntent
 from trading.methods.base import BaseTimeSelection

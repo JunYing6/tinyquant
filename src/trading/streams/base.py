@@ -8,7 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 import pandas as pd  # type: ignore[import-untyped]
 
-from tools.data_getter.market.schema import DataRequest, coerce_data_request
+from tools.data import DataBatch, DataRequest
+from trading.requests import canonical_request, with_routing
 
 if TYPE_CHECKING:
     from trading.minds.base import BaseMind
@@ -71,7 +72,7 @@ class BaseStream:
         queries: List[DataRequest] = []
         for strategy in self.strategies.values():
             for query in strategy.prepare_requirements(date):
-                queries.append(self._normalize_query(query).with_params(source_strategy=strategy.strategy_name))
+                queries.append(with_routing(canonical_request(query), source_strategy=strategy.strategy_name))
         return queries
 
     @staticmethod
@@ -87,7 +88,7 @@ class BaseStream:
         queries: List[DataRequest] = []
         for name, strategy in self.strategies.items():
             for query in strategy.continue_pipeline(date):
-                queries.append(self._normalize_query(query).with_params(source_strategy=name))
+                queries.append(with_routing(canonical_request(query), source_strategy=name))
         return queries
 
     def on_daily(self, market_data: Optional[Dict[str, Any]] = None) -> None:

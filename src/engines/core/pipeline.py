@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from engines.core.trading_clock import TradingDayContext
-from tools.data_getter.market.schema import DataRequest, coerce_data_request
-from tools.data_getter.providers import MarketDataProvider
+from tools.data import DataGateway, DataRequest
+from trading.requests import canonical_request, decode_routing
 
 
 class DataProviderError(RuntimeError):
@@ -15,7 +15,7 @@ class DataProviderError(RuntimeError):
 
 
 class UnifiedDataPipeline:
-    def __init__(self, entity: Any, data_provider: MarketDataProvider, adapter: Any = None) -> None:
+    def __init__(self, entity: Any, data_provider: Any, adapter: Any = None) -> None:
         if data_provider is None:
             raise ValueError("data_provider is required")
         self.entity = entity
@@ -35,15 +35,32 @@ class UnifiedDataPipeline:
             if iterations > 1_000:
                 raise RuntimeError("pipeline exceeded 1000 continuation iterations")
             for query in queries:
-                request = coerce_data_request(query).with_params(date=as_of_date)
+                legacy_query = query
+                request = canonical_request(query)
+                if request.anchor is None:
+                    request = DataRequest(
+                        dataset=request.dataset, schema_version=request.schema_version,
+                        instruments=request.instruments, anchor=as_of_date,
+                        fields=request.fields, frequency=request.frequency,
+                        event_types=request.event_types, as_of=request.as_of,
+                        price_basis=request.price_basis, session=request.session,
+                        filters=request.filters, session_window=request.session_window,
+                        correlation_id=request.correlation_id, delivery_key=request.delivery_key,
+                        cursor=request.cursor, limit=request.limit, asset_type=request.asset_type,
+                    )
                 try:
-                    data = self.data_provider.fetch(request, as_of_date)
+                    if hasattr(self.data_provider, "read"):
+                        batch = self.data_provider.read(request)
+                    else:
+                        records = tuple(self.data_provider.fetch(request, as_of_date))
+                        batch = records
                 except Exception as error:
-                    raise DataProviderError(
-                        f"provider failed for {request.scope} on {as_of_date}: {error}"
-                    ) from error
-                sign = {"idx": request.idx, **dict(request.params)}
-                self.entity.receive_data(sign, data)
+                    raise DataProviderError(f"provider failed for {request.dataset} on {as_of_date}: {error}") from error
+                if hasattr(self.data_provider, "read"):
+                    self.entity.receive_data(batch, request.delivery_key)
+                else:
+                    params = {"idx": getattr(legacy_query, "idx", None), "date": as_of_date}
+                    self.entity.receive_data(params, batch)
             queries = list(self.entity.continue_pipeline(decision_datetime))
 
     def run_intraday(self, date: str, ticks: Iterable[dict[str, Any]]) -> None:

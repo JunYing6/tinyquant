@@ -10,7 +10,8 @@ from collections.abc import Sequence
 
 import pandas as pd  # type: ignore[import-untyped]
 
-from tools.data_getter.market.schema import DataRequest, coerce_data_request
+from tools.data import DataBatch, DataRequest
+from trading.requests import canonical_request, with_routing
 from trading.factors.base import (
     BaseFactor,
     BinarySelectionFactor,
@@ -135,7 +136,7 @@ class BaseComponent(ABC):
                 if history
                 else factor._active_generation
             )
-            request = coerce_data_request(query).with_params(
+            request = with_routing(canonical_request(query),
                 idy=index,
                 request_id=request_id,
                 generation=generation,
@@ -152,7 +153,7 @@ class BaseComponent(ABC):
         )
 
     def receive_data(self, sign: dict, data: Any) -> None:
-        factor = self._idy_map.get(sign.get("idy", -1))
+        factor = self._idy_map.get(int(sign.get("idy", -1)))
         if factor is not None:
             if sign.get("source") == "timer_history" and "request_channel" not in sign:
                 sign = {**sign, "request_channel": "history"}
