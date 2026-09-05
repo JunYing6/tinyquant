@@ -10,8 +10,8 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from engines.fast import FastBacktestEngine
-from mock_market_data import InMemoryGateway  # type: ignore[import-not-found]
 from tools.data import Bar, DataRequest, Session, TradingPhase
+from adapters.memory_adapters import make_gateway
 
 SAMPLE_DAILY = {
     "20240102": 10.0,
@@ -58,16 +58,16 @@ class DemoStrategy(BaseStrategy):
         )
 
 
-def _demo_gateway() -> InMemoryGateway:
+def _demo_gateway() -> Any:
     from datetime import datetime, timezone
 
     bars, sessions = [], []
     for day, price in SAMPLE_DAILY.items():
         close = datetime.strptime(day, "%Y%m%d").replace(hour=15, tzinfo=timezone.utc)
-        bars.append(Bar(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=close, event_time=close, available_at=close, trading_date=close.date(), source="demo", quality="valid", metadata={}, frequency="1d", interval_start=close, interval_end=close, open=price, high=price, low=price, close=price, volume=0, turnover=0, is_complete=True, price_basis="raw"))
+        bars.append(Bar(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=close, event_time=close, available_at=close, trading_date=close.date(), source="demo", quality="valid", metadata={}, frequency="1d", interval_start=close, interval_end=close, open=price, high=price, low=price, close=price, volume=0.0, turnover=0.0, is_complete=True, price_basis="raw"))
         phase = TradingPhase(name="regular", start=close.replace(hour=9), end=close, accepts_trades=True, accepts_quotes=True)
         sessions.append(Session(market="CN", trading_date=close.date(), timezone="UTC", phases=(phase,)))
-    return InMemoryGateway(bars=bars, sessions=sessions)
+    return make_gateway(bars, sessions)
 
 
 def main() -> None:
