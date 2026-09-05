@@ -6,8 +6,8 @@ import importlib
 import inspect
 from typing import Any
 
-from trading.strategies.base import BaseStrategy
-from trading.streams.base import BaseStream
+from trading_nodes_base.strategies.base import BaseStrategy
+from trading_nodes_base.streams.base import BaseStream
 
 
 class FactoryContractError(ValueError):

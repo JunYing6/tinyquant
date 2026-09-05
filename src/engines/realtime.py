@@ -27,8 +27,8 @@ from tools.data import (
     TradeTick,
 )
 from tools.trade.providers import TradeExecutor
-from trading.strategies.base import BaseStrategy
-from trading.streams.base import BaseStream
+from trading_nodes_base.strategies.base import BaseStrategy
+from trading_nodes_base.streams.base import BaseStream
 
 logger = logging.getLogger(__name__)
 _RESUME_STATES = frozenset({"healthy", "ok", "resumed", "active"})

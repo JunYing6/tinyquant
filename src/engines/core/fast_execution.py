@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from tools.data import Bar
-from trading.factors.types import ExecutionRequest, SignalIntent
+from trading_nodes_base.factors.types import ExecutionRequest, SignalIntent
 
 
 @dataclass

@@ -9,7 +9,7 @@ from datetime import date, datetime, time
 from typing import Any, Callable, Mapping
 
 from tools.data import Bar, TradeTick
-from trading.factors.types import KlineBar, normalize_frequency
+from trading_nodes_base.factors.types import KlineBar, normalize_frequency
 
 
 _SESSIONS = ((9 * 60 + 30, 11 * 60 + 30), (13 * 60, 15 * 60))
@@ -75,7 +75,7 @@ class KlineAggregator:
 
     def feed_tick(self, tick: Mapping[str, Any]) -> None:
         """Temporary dict compatibility for fast/realtime; remove in Task 8/9."""
-        from trading.market_events import market_event_from_dict
+        from trading_nodes_base.market_events import market_event_from_dict
         event = market_event_from_dict(tick)
         if not isinstance(event, TradeTick):
             raise TypeError("KlineAggregator.feed_tick requires a trade dict")

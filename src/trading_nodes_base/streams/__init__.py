@@ -1,3 +1,3 @@
-from trading.streams.base import BaseStream
+from trading_nodes_base.streams.base import BaseStream
 
 __all__ = ["BaseStream"]

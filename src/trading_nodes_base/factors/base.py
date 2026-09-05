@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 
-from trading.factors.types import (
+from trading_nodes_base.factors.types import (
     ExecutionRequest,
     KlineBar,
     RiskSignal,

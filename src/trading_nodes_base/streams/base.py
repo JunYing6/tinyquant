@@ -9,11 +9,11 @@ from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 import pandas as pd  # type: ignore[import-untyped]
 
 from tools.data import DataBatch, DataRequest
-from trading.requests import canonical_request, with_routing
+from trading_nodes_base.requests import canonical_request, decode_routing, with_routing
 
 if TYPE_CHECKING:
-    from trading.minds.base import BaseMind
-    from trading.strategies.base import BaseStrategy
+    from trading_nodes_base.minds.base import BaseMind
+    from trading_nodes_base.strategies.base import BaseStrategy
 
 
 _MAX_RETURN_HISTORY = 504
@@ -79,10 +79,16 @@ class BaseStream:
     def _normalize_query(query: Any) -> DataRequest:
         return canonical_request(query)
 
-    def receive_data(self, sign: Dict[str, Any], data: Any) -> None:
+    def receive_data(self, batch: Any, delivery_key: Any = None) -> None:
+        if isinstance(batch, dict) and delivery_key is not None and not isinstance(delivery_key, str):
+            name = batch.get("source_strategy")
+            if name in self.strategies:
+                self.strategies[name].receive_data(batch, delivery_key)
+            return
+        sign = {**(decode_routing(delivery_key or getattr(batch, "request_id", "") or "") or {})}
         name = sign.get("source_strategy")
         if name in self.strategies:
-            self.strategies[name].receive_data(sign, data)
+            self.strategies[name].receive_data(batch, delivery_key)
 
     def continue_pipeline(self, date: datetime) -> List[DataRequest]:
         queries: List[DataRequest] = []

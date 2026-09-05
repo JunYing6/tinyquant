@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Any, Callable, Mapping
 
 from tools.data import MarketEvent, QuoteTick, TradeTick
-from trading.factors.types import ExecutionMode, ExecutionRequest
+from trading_nodes_base.factors.types import ExecutionMode, ExecutionRequest
 
 
 class OrderStatus(StrEnum):
@@ -136,7 +136,7 @@ class TickMatchingEngine:
 
     def match(self, tick: Mapping[str, Any], trade_date: Any) -> list[MatchingOrder]:
         """Temporary dict compatibility; remove in Task 8/9."""
-        from trading.market_events import market_event_from_dict
+        from trading_nodes_base.market_events import market_event_from_dict
         return self.match_event(market_event_from_dict(tick), trade_date)
 
     def _match_dict(self, tick: Mapping[str, Any], trade_date: Any) -> list[MatchingOrder]:

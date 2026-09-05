@@ -1,4 +1,4 @@
-from trading.methods.base import (
+from trading_nodes_base.methods.base import (
     BaseRiskControl,
     BaseStockPicking,
     BaseTimeSelection,

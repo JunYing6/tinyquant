@@ -29,4 +29,4 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["tinyquant_cli*", "engines*", "trading*", "tools*"]
+include = ["tinyquant_cli*", "engines*", "trading_nodes_base*", "tools*"]

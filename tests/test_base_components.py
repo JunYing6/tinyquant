@@ -8,14 +8,14 @@ import pytest
 
 from tools.data import DataRequest as CanonicalDataRequest
 from tools.data import DataRequest
-from trading.factors.types import (
+from trading_nodes_base.factors.types import (
     ExecutionMode,
     ExecutionRequest,
     KlineBar,
     RiskSignal,
     SignalIntent,
 )
-from trading.factors.base import (
+from trading_nodes_base.factors.base import (
     BaseFactor,
     BinarySelectionFactor,
     FloatSelectionFactor,
@@ -23,16 +23,16 @@ from trading.factors.base import (
     RiskKlineFactor,
     TickTimingFactor,
 )
-from trading.methods.base import (
+from trading_nodes_base.methods.base import (
     BaseRiskControl,
     BaseStockPicking,
     BaseTimeSelection,
     RiskDecision,
     StrategyContext,
 )
-from trading.minds.base import BaseMind
-from trading.strategies.base import BaseStrategy
-from trading.streams.base import BaseStream
+from trading_nodes_base.minds.base import BaseMind
+from trading_nodes_base.strategies.base import BaseStrategy
+from trading_nodes_base.streams.base import BaseStream
 
 
 class FakeAccount:
@@ -1198,7 +1198,7 @@ def test_mind_validates_weights_and_stream_creates_shadow_accounts() -> None:
 
 
 def test_removed_factor_bases_are_not_importable() -> None:
-    import trading.factors.base as factor_base
+    import trading_nodes_base.factors.base as factor_base
 
     with pytest.raises(AttributeError):
         getattr(factor_base, "Base" + "Composite" + "Factor")

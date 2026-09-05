@@ -1,3 +1,3 @@
-from trading.minds.base import BaseMind
+from trading_nodes_base.minds.base import BaseMind
 
 __all__ = ["BaseMind"]

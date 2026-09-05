@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from tools.data import Bar, DataRequest, InMemoryGateway, Session, TradingPhase
-from trading.factors.base import KlineTimingFactor, TickTimingFactor
-from trading.factors.types import KlineBar, SignalIntent
-from trading.methods.base import BaseTimeSelection
-from trading.strategies.base import BaseStrategy
+from trading_nodes_base.factors.base import KlineTimingFactor, TickTimingFactor
+from trading_nodes_base.factors.types import KlineBar, SignalIntent
+from trading_nodes_base.methods.base import BaseTimeSelection
+from trading_nodes_base.strategies.base import BaseStrategy
 
 
 class _DemoKlineFactor(KlineTimingFactor):

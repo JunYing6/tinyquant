@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from trading.streams.base import BaseStream
+    from trading_nodes_base.streams.base import BaseStream
 
 
 class BaseMind(ABC):

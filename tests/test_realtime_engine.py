@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import pandas as pd
+
 import pytest
 
 from engines.realtime import RealTimeTradeEngine
@@ -20,13 +22,12 @@ from tools.data import (
     TradingPhase,
     UnsupportedDatasetError,
 )
-from trading.factors.base import TickTimingFactor
-from trading.factors.types import ExecutionMode, ExecutionRequest, SignalIntent
-from trading.methods.base import BaseTimeSelection
-from trading.methods.selector import FixedStockPicking
-from trading.minds.base import BaseMind
-from trading.strategies.base import BaseStrategy
-from trading.streams.base import BaseStream
+from trading_nodes_base.factors.base import TickTimingFactor
+from trading_nodes_base.factors.types import ExecutionMode, ExecutionRequest, SignalIntent
+from trading_nodes_base.methods.base import BaseStockPicking, BaseTimeSelection
+from trading_nodes_base.minds.base import BaseMind
+from trading_nodes_base.strategies.base import BaseStrategy
+from trading_nodes_base.streams.base import BaseStream
 
 
 def _day(offset: int = 0) -> str:
@@ -120,6 +121,20 @@ def _state(day: str = _day(), clock: str = "10:00:00", state: str = "error") -> 
     )
 
 
+class DemoFixedPicking(BaseStockPicking):
+    """Credential-free mock selector that passes the pool through unchanged."""
+
+    def __init__(self, stock_pool: Sequence[str]) -> None:
+        self.stock_pool = list(dict.fromkeys(stock_pool))
+        super().__init__("demo-fixed-picking", [], [], [])
+
+    def select_stocks(self, date: Any) -> pd.DataFrame:
+        if not self.stock_pool:
+            return pd.DataFrame(columns=["asset", "weight"])
+        weight = 1.0 / len(self.stock_pool)
+        return pd.DataFrame({"asset": self.stock_pool, "weight": [weight] * len(self.stock_pool)})
+
+
 class DirectLiveBuyFactor(TickTimingFactor):
     def __init__(self) -> None:
         super().__init__("live-buy")
@@ -152,7 +167,7 @@ class LiveStrategy(BaseStrategy):
     def __init__(self, name: str = "live", code: str = "000001.SZ") -> None:
         super().__init__(
             name,
-            selector=FixedStockPicking([code]),
+            selector=DemoFixedPicking([code]),
             timer=BaseTimeSelection(f"{name}-timer", [], [DirectLiveBuyFactor()]),
         )
 
@@ -171,7 +186,7 @@ class QueryingLiveStrategy(BaseStrategy):
     def __init__(self) -> None:
         super().__init__(
             "querying-live",
-            selector=FixedStockPicking(["000001.SZ"]),
+            selector=DemoFixedPicking(["000001.SZ"]),
             timer=BaseTimeSelection("querying-timer", [], [QueryingTickFactor()]),
         )
 

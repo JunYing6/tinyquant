@@ -11,8 +11,8 @@ from collections.abc import Sequence
 import pandas as pd  # type: ignore[import-untyped]
 
 from tools.data import DataBatch, DataRequest
-from trading.requests import canonical_request, with_routing
-from trading.factors.base import (
+from trading_nodes_base.requests import canonical_request, with_routing
+from trading_nodes_base.factors.base import (
     BaseFactor,
     BinarySelectionFactor,
     FloatSelectionFactor,
@@ -23,7 +23,7 @@ from trading.factors.base import (
     validate_selection_output,
     winsorize_and_zscore,
 )
-from trading.factors.types import KlineBar, RiskSignal, SignalIntent, ExecutionRequest, normalize_frequency
+from trading_nodes_base.factors.types import KlineBar, RiskSignal, SignalIntent, ExecutionRequest, normalize_frequency
 
 
 @dataclass(frozen=True)

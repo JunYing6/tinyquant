@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 from engines.core.trading_clock import TradingDayContext
 from tools.data import DataGateway, DataRequest, StreamEvent
-from trading.requests import canonical_request
+from trading_nodes_base.requests import canonical_request
 
 
 class DataProviderError(RuntimeError):

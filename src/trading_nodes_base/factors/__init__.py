@@ -1,4 +1,4 @@
-from trading.factors.base import (
+from trading_nodes_base.factors.base import (
     BaseFactor,
     BinarySelectionFactor,
     FloatSelectionFactor,
