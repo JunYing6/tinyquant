@@ -95,6 +95,8 @@ class FastBacktestEngine:
             batch = self.data_gateway.read(DataRequest(dataset="market.bar", start=session.open, end=session.close, fields=("open", "high", "low", "close", "volume", "turnover"), frequency="1d", price_basis="raw"))
         except Exception as error:
             raise DataProviderError(f"market.bar read failed on {date_key}: {error}") from error
+        if not batch.complete or batch.next_cursor is not None:
+            raise DataContractError(f"{batch.dataset} batch must be complete and fully consumed (request_id={batch.request_id})", dataset=batch.dataset, request_id=batch.request_id)
         bars = [record for record in batch.records if isinstance(record, Bar)]
         price_dict = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
         if self.mode == "fast":

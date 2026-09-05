@@ -8,7 +8,7 @@ import pytest
 
 from engines.core.pipeline import DataProviderError
 from engines.fast import FastBacktestEngine
-from tools.data import Bar, DataRequest, InMemoryGateway, Session, TradeTick, TradingPhase
+from tools.data import Bar, DataContractError, DataRequest, InMemoryGateway, Session, TradeTick, TradingPhase
 from trading.factors.base import KlineTimingFactor, TickTimingFactor
 from trading.factors.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
 from trading.methods.base import BaseTimeSelection
@@ -101,6 +101,27 @@ class TickStrategy(BaseStrategy):
         super().__init__(name, timer=BaseTimeSelection(f"{name}-timer", [], [DirectBuyTickFactor()]))
 
 
+class SequenceRecordingFactor(TickTimingFactor):
+    def __init__(self) -> None:
+        super().__init__("sequence-recording")
+        self.prices: list[float] = []
+
+    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
+        self._data_clear()
+        self.sign["fit"] = True
+        return []
+
+    def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[ExecutionRequest]:
+        self.prices.append(tick["price"])
+        return []
+
+
+class SequenceTickStrategy(BaseStrategy):
+    def __init__(self) -> None:
+        self.factor = SequenceRecordingFactor()
+        super().__init__("sequence-tick", timer=BaseTimeSelection("sequence-tick-timer", [], [self.factor]))
+
+
 class NextBarBuyFactor(KlineTimingFactor):
     emitted_actions = frozenset({"BUY"})
 
@@ -150,6 +171,20 @@ def test_fast_backtest_runs_with_injected_memory_gateway() -> None:
     assert engine.get_stats()["final_equity"] == engine.equity_curve[-1]["equity"]
 
 
+def test_fast_backtest_rejects_incomplete_market_bar_batch() -> None:
+    class IncompleteBarGateway(InMemoryGateway):
+        def read(self, request: DataRequest) -> Any:
+            batch = super().read(request)
+            if request.dataset == "market.bar":
+                return type(batch)(request_id="bar-request-1", dataset=batch.dataset, schema_version=batch.schema_version, correlation_id=batch.correlation_id, records=batch.records, complete=False, next_cursor="cursor-1", provenance=batch.provenance, quality=batch.quality)
+            return batch
+
+    engine = FastBacktestEngine(BuyingFastStrategy(), "20240102", "20240102", mode="fast", data_gateway=IncompleteBarGateway(bars=[BARS[0]], sessions=[_session("20240102")]), progress_bar=False)
+
+    with pytest.raises(DataContractError, match="market.bar.*bar-request-1"):
+        engine.run()
+
+
 def test_fast_backtest_applies_slippage_to_pending_daily_orders() -> None:
     engine = FastBacktestEngine(BuyingFastStrategy(), "20240102", "20240102", initial_capital=100_000, mode="fast", slippage={"buy": 0.01, "sell": 0.0, "model": "proportional"}, data_gateway=_gateway([BARS[0]], days=["20240102"]), progress_bar=False)
 
@@ -174,6 +209,19 @@ def test_tick_backtest_replays_trade_events_through_matching_runtime() -> None:
     engine.run()
 
     assert engine.daily_positions[-1]["positions"] == {"000001.SZ": 100}
+
+
+def test_tick_backtest_orders_same_time_events_by_sequence() -> None:
+    ticks = [
+        TradeTick(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=_instant("20240102", "09:31:00"), event_time=_instant("20240102", "09:31:00"), available_at=None, trading_date=_instant("20240102").date(), source="test", quality="valid", metadata={}, event_type="trade", price=20.0, size=100.0, turnover=2_000.0, side="UNKNOWN", sequence=2),
+        TradeTick(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=_instant("20240102", "09:31:00"), event_time=_instant("20240102", "09:31:00"), available_at=None, trading_date=_instant("20240102").date(), source="test", quality="valid", metadata={}, event_type="trade", price=10.0, size=100.0, turnover=1_000.0, side="UNKNOWN", sequence=1),
+    ]
+    strategy = SequenceTickStrategy()
+    engine = FastBacktestEngine(strategy, "20240102", "20240102", mode="tick", data_gateway=_gateway([BARS[0]], events=ticks, days=["20240102"]), progress_bar=False)
+
+    engine.run()
+
+    assert strategy.factor.prices == [10.0, 20.0]
 
 
 def test_stream_backtest_uses_shared_real_account_and_mind_weights() -> None:
