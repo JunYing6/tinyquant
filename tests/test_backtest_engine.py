@@ -244,3 +244,15 @@ def test_backtest_wraps_gateway_errors_with_dataset_and_date() -> None:
 
     with pytest.raises(DataProviderError, match="market.bar.*20240102.*offline"):
         engine.run()
+
+
+def test_stream_engine_collects_member_curve() -> None:
+    stream = BaseStream("stream", [BuyingFastStrategy("s1"), BuyingFastStrategy("s2")], EqualMind())
+    engine = FastBacktestEngine(stream, "20240102", "20240103", mode="fast", data_gateway=_gateway(BARS), progress_bar=False)
+
+    engine.run()
+
+    assert len(engine.member_curve) == 2
+    assert set(engine.member_curve[0]["members"].keys()) == {"s1", "s2"}
+    assert set(engine.member_curve[0]["weights"].keys()) == {"s1", "s2"}
+    assert engine.member_curve[-1]["members"]["s1"]["equity"] > 0

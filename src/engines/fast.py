@@ -58,6 +58,7 @@ class FastBacktestEngine:
         self.trade_dates: list[str] = []
         self.equity_curve: list[dict[str, Any]] = []
         self.daily_positions: list[dict[str, Any]] = []
+        self.member_curve: list[dict[str, Any]] = []
 
     @property
     def _strategies(self) -> list[BaseStrategy]:
@@ -139,6 +140,15 @@ class FastBacktestEngine:
         positions = self.account.positions
         self.equity_curve.append({"date": date_key, "trade_date": date_key, "equity": self.account.total_equity, "balance": self.account.balance, "position_value": self.account.total_equity - self.account.balance, "position_count": len(positions)})
         self.daily_positions.append({"date": date_key, "trade_date": date_key, "positions": positions, "close_prices": dict(price_dict)})
+        if self.is_stream:
+            self.member_curve.append({
+                "date": date_key,
+                "members": {
+                    name: {"equity": shadow.total_equity, "position_value": shadow.total_equity - shadow.balance}
+                    for name, shadow in self.entity.shadow_accounts.items()
+                },
+                "weights": dict(self.entity.mind.current_weights),
+            })
 
     def _active_codes(self) -> set[str]:
         codes: set[str] = set()
