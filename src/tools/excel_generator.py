@@ -65,24 +65,29 @@ class ExcelReportGenerator:
         self.start_date = start_date
         self.end_date = end_date
         self.initial_capital = initial_capital
+        self.member_count = 0
 
     def generate(self, save_path: str) -> str:
         """Write the workbook to ``save_path`` and return the path."""
         os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
 
         wb = Workbook()
-
-        self._create_overview_sheet(wb)
-        self._create_equity_sheet(wb)
-        self._create_trades_sheet(wb)
-        self._create_positions_sheet(wb)
-        self._create_monthly_sheet(wb)
-
+        self._create_sheets(wb)
         if 'Sheet' in wb.sheetnames:
             del wb['Sheet']
 
         wb.save(save_path)
         return save_path
+
+    def _report_title(self) -> str:
+        return 'tinyquant 回测报告'
+
+    def _create_sheets(self, wb: Workbook) -> None:
+        self._create_overview_sheet(wb)
+        self._create_equity_sheet(wb)
+        self._create_trades_sheet(wb)
+        self._create_positions_sheet(wb)
+        self._create_monthly_sheet(wb)
 
     def _set_header_row(self, ws: Worksheet, row: int, headers: list[str]) -> None:
         for col_idx, header in enumerate(headers, start=1):
@@ -100,7 +105,7 @@ class ExcelReportGenerator:
         ws = wb.create_sheet('策略概览', 0)
 
         ws.merge_cells('A1:F1')
-        ws['A1'] = 'tinyquant 回测报告'
+        ws['A1'] = self._report_title()
         ws['A1'].font = self.TITLE_FONT
         ws['A1'].alignment = Alignment(horizontal='center')
 
@@ -112,6 +117,8 @@ class ExcelReportGenerator:
             ['策略名称', self.strategy_name, '回测期间', f'{self.start_date} - {self.end_date}'],
             ['初始资金', self.initial_capital, '交易天数', self.stats_dict.get('交易天数', 0)],
         ]
+        if self.member_count:
+            info_rows.append(['成员策略数', self.member_count, '', ''])
         for r_idx, row_data in enumerate(info_rows, start=4):
             for c_idx, value in enumerate(row_data, start=1):
                 cell = ws.cell(row=r_idx, column=c_idx, value=value)

@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 
 from engines.fast import FastBacktestEngine
 from tools.data import Bar, DataRequest, InMemoryGateway, Session, TradingPhase
+from tools.excel_generator import ExcelReportGenerator
 from tools.excel_report import (
     _localized_stats,
     default_output_dir,
@@ -132,3 +133,32 @@ def test_localized_stats_scales_percent_keys() -> None:
     assert localized["夏普比率"] == pytest.approx(1.5)
     assert localized["交易天数"] == 2
     assert localized["最终权益"] == pytest.approx(112000.0)
+
+
+class _HookProbe(ExcelReportGenerator):
+    def __init__(self, *args, member_count: int = 0, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.member_count = member_count
+
+    def _report_title(self) -> str:
+        return "tinyquant 组合回测报告"
+
+    def _create_sheets(self, wb) -> None:
+        super()._create_sheets(wb)
+        wb.create_sheet("探测Sheet")
+
+
+def test_generator_hooks_allow_title_override_and_sheet_extension(tmp_path) -> None:
+    engine = _run_engine()
+    gen = _HookProbe(
+        equity_curve=list(engine.equity_curve), daily_positions=list(engine.daily_positions),
+        trade_log=engine.account.trade_log, stats_dict=_localized_stats(engine.get_stats()),
+        strategy_name="probe", start_date=engine.start_date, end_date=engine.end_date,
+        initial_capital=engine.initial_capital, member_count=2,
+    )
+    save_path = tmp_path / "probe.xlsx"
+    gen.generate(str(save_path))
+
+    workbook = load_workbook(save_path)
+    assert workbook["策略概览"]["A1"].value == "tinyquant 组合回测报告"
+    assert workbook.sheetnames[-1] == "探测Sheet"
