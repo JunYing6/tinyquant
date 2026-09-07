@@ -9,7 +9,6 @@ from rich.console import Console
 
 from tinyquant_cli.commands.backtest import run_backtest
 from tinyquant_cli.commands.doctor import run_doctor
-from tinyquant_cli.commands.examples import run_examples
 from tinyquant_cli.commands.help import run_help
 from tinyquant_cli.registry import Command, Registry
 from tinyquant_cli.runtime import SessionState
@@ -22,22 +21,6 @@ def _configure_help(parser: argparse.ArgumentParser) -> None:
 def _help_handler(console: Console, state: SessionState):
     def handler(args: argparse.Namespace) -> int:
         return run_help(console, args.topic)
-
-    return handler
-
-
-def _configure_examples(parser: argparse.ArgumentParser) -> None:
-    subparsers = parser.add_subparsers(dest="action")
-    subparsers.add_parser("list", help="list bundled examples")
-    run_parser = subparsers.add_parser("run", help="run a bundled example")
-    run_parser.add_argument("name", choices=["backtest"])
-
-
-def _examples_handler(console: Console, state: SessionState):
-    def handler(args: argparse.Namespace) -> int:
-        if args.action is None:
-            return run_help(console, "examples")
-        return run_examples(console, state, args.action, getattr(args, "name", None))
 
     return handler
 
@@ -61,6 +44,8 @@ def _configure_backtest(parser: argparse.ArgumentParser) -> None:
     run_parser.add_argument("--end", required=True, help="end date YYYYMMDD")
     run_parser.add_argument("--capital", type=float, default=1_000_000.0)
     run_parser.add_argument("--mode", choices=["auto", "fast", "tick"], default="auto")
+    run_parser.add_argument("--excel", action="store_true", help="write the Excel backtest report")
+    run_parser.add_argument("--excel-dir", default=None, help="Excel report output directory (default: ./excel_reports)")
 
 
 def _backtest_handler(console: Console, state: SessionState):
@@ -77,6 +62,8 @@ def _backtest_handler(console: Console, state: SessionState):
             args.end,
             args.capital,
             args.mode,
+            excel_dir=args.excel_dir,
+            write_excel=args.excel or args.excel_dir is not None,
         )
 
     return handler
@@ -86,7 +73,6 @@ def build_registry(console: Console, state: SessionState) -> Registry:
     registry = Registry()
     registry.register(Command("help", "Run", "Show command help", ["?"], _configure_help, _help_handler(console, state)))
     registry.register(Command("backtest", "Run", "Run a provider-driven backtest", ["bt"], _configure_backtest, _backtest_handler(console, state)))
-    registry.register(Command("examples", "Examples", "List or run bundled examples", ["ex"], _configure_examples, _examples_handler(console, state)))
     registry.register(Command("doctor", "Diagnostics", "Check the local runtime", ["diag"], _configure_doctor, _doctor_handler(console, state)))
     return registry
 

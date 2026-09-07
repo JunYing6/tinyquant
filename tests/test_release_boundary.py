@@ -50,4 +50,4 @@ def test_release_does_not_ship_concrete_user_nodes() -> None:
     assert not (source / "trading_nodes_base" / "streams" / "multi_strategy.py").exists()
     assert not (source / "trading_nodes_base" / "minds" / "weighting.py").exists()
     assert not (source / "trading_nodes_base" / "methods" / "selector" / "fixed.py").exists()
-    assert not (root / "examples" / "multi_strategy").exists()
+    assert not (root / "examples").exists()

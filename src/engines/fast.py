@@ -104,7 +104,7 @@ class FastBacktestEngine:
         else:
             self._run_tick_day(session, price_dict)
         self._settle_day(price_dict)
-        self._record_day(date_key)
+        self._record_day(date_key, price_dict)
 
     def _run_fast_day(self, price_dict: dict[str, float], bars: list[Bar]) -> None:
         for source in bars:
@@ -135,9 +135,10 @@ class FastBacktestEngine:
     def _settle_day(self, price_dict: dict[str, float]) -> None:
         self.entity.daily_settle(price_dict) if isinstance(self.entity, BaseStream) else (self.account.daily_summarize(price_dict), cast(BaseStrategy, self.entity).on_day_end())
 
-    def _record_day(self, date_key: str) -> None:
-        self.equity_curve.append({"date": date_key, "trade_date": date_key, "equity": self.account.total_equity, "balance": self.account.balance})
-        self.daily_positions.append({"date": date_key, "trade_date": date_key, "positions": self.account.positions})
+    def _record_day(self, date_key: str, price_dict: dict[str, float]) -> None:
+        positions = self.account.positions
+        self.equity_curve.append({"date": date_key, "trade_date": date_key, "equity": self.account.total_equity, "balance": self.account.balance, "position_value": self.account.total_equity - self.account.balance, "position_count": len(positions)})
+        self.daily_positions.append({"date": date_key, "trade_date": date_key, "positions": positions, "close_prices": dict(price_dict)})
 
     def _active_codes(self) -> set[str]:
         codes: set[str] = set()

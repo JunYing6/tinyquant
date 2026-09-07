@@ -12,19 +12,14 @@ def test_one_shot_help_uses_registered_handler(capsys) -> None:
 
 
 def test_one_shot_unknown_command_returns_nonzero(capsys) -> None:
-    assert app.main(["exampls"]) == 2
-    assert "examples" in capsys.readouterr().err
+    assert app.main(["nosuchcmd"]) == 2
+    assert "unknown command" in capsys.readouterr().err
 
 
 def test_one_shot_invalid_arguments_returns_nonzero(capsys) -> None:
-    assert app.main(["backtest", "run", "tinyquant_cli.demos:build_demo_backtest"]) == 2
+    assert app.main(["backtest", "run", "mymod:build"]) == 2
 
     assert "Invalid command arguments" in capsys.readouterr().err
-
-
-def test_group_command_without_subcommand_shows_help(capsys) -> None:
-    assert app.main(["examples"]) == 0
-    assert "Examples" in capsys.readouterr().out
 
 
 def test_group_command_backtest_without_subcommand_shows_help(capsys) -> None:

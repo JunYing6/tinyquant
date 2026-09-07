@@ -18,6 +18,8 @@ def run_backtest(
     end: str,
     capital: float,
     mode: str,
+    excel_dir: str | None = None,
+    write_excel: bool = False,
 ) -> int:
     try:
         entity, data_gateway = load_backtest_factory(factory_path)
@@ -37,6 +39,7 @@ def run_backtest(
         state.update_backtest(stats)
         account = engine.account
         render_backtest(console, stats, engine.equity_curve, account.positions)
+        _export_excel(console, engine, excel_dir, write_excel)
         return 0
     except FactoryContractError as error:
         render_error(console, str(error))
@@ -44,3 +47,16 @@ def run_backtest(
     except Exception as error:
         render_error(console, f"{type(error).__name__}: {error}")
         return 1
+
+
+def _export_excel(console: Console, engine: FastBacktestEngine, excel_dir: str | None, write_excel: bool) -> None:
+    if not write_excel:
+        return
+    try:
+        from tools.excel_report import export_backtest_excel
+
+        path = export_backtest_excel(engine, output_dir=excel_dir)
+    except Exception as error:
+        console.print(f"[warning]Excel report skipped: {type(error).__name__}: {error}[/warning]")
+        return
+    console.print(f"[label]Excel report[/label] {path}")

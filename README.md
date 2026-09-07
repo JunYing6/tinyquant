@@ -65,13 +65,11 @@ tq
 
 ```bash
 tq help
-tq examples list
-tq examples run backtest
 tq doctor
 tq backtest run package.module:function --start 20240102 --end 20241231
 ```
 
-REPL 同时接受 `command` 和 `/command` 格式，支持自动补全，保存本地命令历史，并将诊断信息和回测摘要以紧凑的量化工作台表格形式呈现。`help`、`examples`、`doctor` 和 `backtest` 是 1.1 版本的完整命令集；CLI 不包含研究、注册表、下载、持久化结果、提供者配置或实盘交易命令。
+REPL 同时接受 `command` 和 `/command` 格式，支持自动补全，保存本地命令历史，并将诊断信息和回测摘要以紧凑的量化工作台表格形式呈现。`help`、`doctor` 和 `backtest` 是 1.1 版本的完整命令集；CLI 不包含研究、注册表、下载、持久化结果、提供者配置或实盘交易命令。
 
 `tq backtest run` 会加载一个无参数的 Python 工厂函数，该函数必须准确返回：
 
@@ -81,11 +79,32 @@ REPL 同时接受 `command` 和 `/command` 格式，支持自动补全，保存�
 
 工厂函数负责创建策略并组装数据网关。CLI 参数只能覆盖开始日期、结束日期、资金和运行模式；数据供应商选择、重试和数据质量策略由 `DataGateway` 负责。
 
+## Excel 回测报告
+
+`tq backtest run` 默认不导出 Excel，只有显式传入 `--excel`（写入默认目录）或 `--excel-dir <路径>`（写入指定目录）时才生成工作簿，包含五个 Sheet：策略概览、权益曲线（含权益走势图）、交易记录、持仓明细、月度收益（含月度收益图）。
+
+输出目录的解析顺序：
+
+1. `--excel-dir <路径>` 显式指定；
+2. 环境变量 `TINYQUANT_EXCEL_DIR`；
+3. 使用默认目录 `excel_reports/`（输出时不存在会自动创建）。
+
+文件名格式为 `{策略名}_{开始日期}_{结束日期}_{时间戳}.xlsx`。
+
+代码中可以对任意跑完的引擎直接导出：
+
+```python
+from tools.excel_report import export_backtest_excel
+
+engine.run()
+report_path = export_backtest_excel(engine)  # -> Path
+```
+
 ## 数据扩展架构
 
 `tools.data` 是唯一数据层：契约定义标准 `Bar`、`Session`、`DataBatch` 和请求，`HistoricalDataPort`/`TradingCalendarPort` 是适配器端口，`DataGateway` 根据 `default_catalog()` 与 `DataBinding` 路由、校验、审计来源并应用策略。
 
-默认 Catalog 注册 37 个数据集。接入新数据源时，在独立集成包或 `examples/adapters/` 中实现端口，不要把供应商类型传入引擎：
+默认 Catalog 注册 37 个数据集。接入新数据源时，在独立集成包（例如用户项目 `tinyquant-workspace`）中实现端口，不要把供应商类型传入引擎：
 
 ```python
 class VendorBars:
@@ -98,16 +117,15 @@ class VendorBars:
         yield self.read(request)
 ```
 
-实现还应按请求过滤记录、返回完整的标准批次，并在 `descriptor` 声明 dataset/mode/schema/capability。日历适配器实现 `sessions(CalendarRequest) -> CalendarBatch`。完整的无凭据示例见 `examples/adapters/memory_adapters.py`。
+实现还应按请求过滤记录、返回完整的标准批次，并在 `descriptor` 声明 dataset/mode/schema/capability。日历适配器实现 `sessions(CalendarRequest) -> CalendarBatch`。
 
 ## 用 DataGateway 运行
 
 ```python
 from engines.fast import FastBacktestEngine
-from examples.adapters.memory_adapters import make_gateway
 
 strategy = ...
-gateway = make_gateway(bars, sessions)
+gateway = build_workspace_gateway()  # 来自用户项目的真实数据适配器
 engine = FastBacktestEngine(strategy, "20240102", "20241231", mode="auto", data_gateway=gateway)
 engine.run()
 print(engine.get_stats())
@@ -132,12 +150,3 @@ engine.start()
 ```
 
 实盘执行不会重试被拒绝的订单，而是记录失败信息，并从注入的执行器同步本地运行时账户。
-
-## 示例
-
-```bash
-python examples/in_memory_backtest.py
-python examples/in_memory_live.py
-```
-
-两个示例都是有限运行、无需凭据，并且可以安全地在本地执行。

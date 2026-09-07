@@ -66,17 +66,6 @@ def build():
     return strategy, gateway
 ```
 
-## 无凭据示例
+## 真实数据适配器
 
-- `examples/adapters/memory_adapters.py`：完整的内存 `HistoricalDataPort`/`TradingCalendarPort` 示例和真实 `DataGateway` 组装。
-- `examples/in_memory_backtest.py`：通过适配器组装 Gateway 后运行有限回测。
-- `examples/in_memory_live.py`：使用 `tools.data.memory.InMemoryGateway` 和内存交易执行器运行有限实盘会话。
-
-```powershell
-$env:PYTHONPATH="src"
-python examples/in_memory_backtest.py
-python examples/in_memory_live.py
-python -m pytest tests/test_data_adapters_demo.py tests/cli -q
-```
-
-这些示例不读取凭据、不访问真实供应商，也不需要本地数据库。
+适配器属于用户项目（例如 `tinyquant-workspace`），通过 `main:build_backtest` 工厂组装并注入 `DataGateway`。tinyquant 1.1 不内置、不发布任何无凭据的内存示例适配器；本地数据库（duckdb/parquet）、tushare 下载与券商执行器等真实实现都在用户项目中完成。
