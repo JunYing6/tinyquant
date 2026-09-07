@@ -207,3 +207,16 @@ def test_stream_report_adds_member_breakdown_sheets(tmp_path) -> None:
     member_eq = workbook["成员权益曲线"]
     assert member_eq["A2"].value == "20240102"
     assert member_eq["B2"].value is not None
+
+
+def test_strategy_report_has_no_member_sheets(tmp_path) -> None:
+    engine = _run_engine()
+    workbook = load_workbook(export_backtest_excel(engine, output_dir=tmp_path))
+    assert workbook.sheetnames == ["策略概览", "权益曲线", "交易记录", "持仓明细", "月度收益"]
+
+
+def test_stream_report_member_summary_has_valid_values(tmp_path) -> None:
+    engine, _ = _run_stream_engine()
+    workbook = load_workbook(export_backtest_excel(engine, output_dir=tmp_path))
+    summary = workbook["成员策略汇总"]
+    assert {summary["A2"].value, summary["A3"].value} == {"s1", "s2"}

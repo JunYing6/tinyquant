@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tools.excel_generator import ExcelReportGenerator
+from tools.excel_generator import ExcelReportGenerator, StreamExcelReportGenerator
 
 DEFAULT_OUTPUT_DIRNAME = "excel_reports"
 ENV_OUTPUT_DIR = "TINYQUANT_EXCEL_DIR"
@@ -63,18 +63,29 @@ def export_backtest_excel(
     )
     directory = Path(output_dir) if output_dir is not None else default_output_dir()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = directory / f"{name}_{engine.start_date}_{engine.end_date}_{timestamp}.xlsx"
+    common = {
+        "equity_curve": list(engine.equity_curve),
+        "daily_positions": list(engine.daily_positions),
+        "trade_log": engine.account.trade_log,
+        "stats_dict": _localized_stats(engine.get_stats()),
+        "strategy_name": name,
+        "start_date": engine.start_date,
+        "end_date": engine.end_date,
+        "initial_capital": engine.initial_capital,
+    }
+    if getattr(engine, "is_stream", False):
+        generator = StreamExcelReportGenerator(
+            **common,
+            member_curve=list(engine.member_curve),
+            member_trade_logs={
+                member: getattr(account, "trade_log", {})
+                for member, account in engine.entity.shadow_accounts.items()
+            },
+        )
+    else:
+        generator = ExcelReportGenerator(**common)
 
-    generator = ExcelReportGenerator(
-        equity_curve=list(engine.equity_curve),
-        daily_positions=list(engine.daily_positions),
-        trade_log=engine.account.trade_log,
-        stats_dict=_localized_stats(engine.get_stats()),
-        strategy_name=name,
-        start_date=engine.start_date,
-        end_date=engine.end_date,
-        initial_capital=engine.initial_capital,
-    )
+    save_path = directory / f"{name}_{engine.start_date}_{engine.end_date}_{timestamp}.xlsx"
     return Path(generator.generate(str(save_path)))
 
 
