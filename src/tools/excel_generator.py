@@ -373,3 +373,114 @@ class ExcelReportGenerator:
                 time_val, code, price, num = trade
                 flat.append((date_str, time_val, code, price, num))
         return flat
+
+
+class StreamExcelReportGenerator(ExcelReportGenerator):
+    def __init__(
+        self,
+        equity_curve: list[dict[str, Any]],
+        daily_positions: list[dict[str, Any]],
+        trade_log: dict[str, list[tuple[Any, str, float, int]]],
+        stats_dict: dict[str, Any],
+        strategy_name: str,
+        start_date: str,
+        end_date: str,
+        initial_capital: float,
+        member_curve: list[dict[str, Any]],
+        member_trade_logs: dict[str, dict],
+    ) -> None:
+        super().__init__(equity_curve, daily_positions, trade_log, stats_dict, strategy_name, start_date, end_date, initial_capital)
+        self.member_curve = member_curve
+        self.member_trade_logs = member_trade_logs
+        self.member_count = len(self._member_names())
+
+    def _report_title(self) -> str:
+        return 'tinyquant 组合回测报告'
+
+    def _create_sheets(self, wb: Workbook) -> None:
+        super()._create_sheets(wb)
+        self._create_member_summary_sheet(wb)
+        self._create_member_equity_sheet(wb)
+        self._create_member_weight_sheet(wb)
+
+    def _member_names(self) -> list[str]:
+        if self.member_curve:
+            first = self.member_curve[0]
+            if first.get('members'):
+                return list(first['members'].keys())
+            if first.get('weights'):
+                return list(first['weights'].keys())
+        return list(self.member_trade_logs.keys())
+
+    def _member_trade_count(self, name: str) -> int:
+        log = self.member_trade_logs.get(name, {})
+        return sum(len(trades) for trades in log.values())
+
+    def _create_member_summary_sheet(self, wb: Workbook) -> None:
+        ws = wb.create_sheet('成员策略汇总')
+        headers = ['成员', '初始权重', '最新权重', '最终权益', '总收益(%)', '交易次数', '持仓市值']
+        self._set_header_row(ws, 1, headers)
+
+        names = self._member_names()
+        first = self.member_curve[0] if self.member_curve else {}
+        last = self.member_curve[-1] if self.member_curve else {}
+
+        for r_idx, name in enumerate(names, start=2):
+            init_w = (first.get('weights') or {}).get(name, 0.0)
+            last_w = (last.get('weights') or {}).get(name, 0.0)
+            init_eq = (first.get('members') or {}).get(name, {}).get('equity', 0.0)
+            last_eq = (last.get('members') or {}).get(name, {}).get('equity', 0.0)
+            ret = (last_eq / init_eq - 1) * 100 if init_eq else 0.0
+            pv = (last.get('members') or {}).get(name, {}).get('position_value', 0.0)
+            row = [name, round(init_w, 4), round(last_w, 4), round(last_eq, 2), round(ret, 2), self._member_trade_count(name), round(pv, 2)]
+            for c_idx, value in enumerate(row, start=1):
+                cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                cell.border = self.THIN_BORDER
+                cell.alignment = Alignment(horizontal='center')
+                if isinstance(value, float):
+                    cell.number_format = self.NUM_FORMAT
+
+        self._set_col_widths(ws, {col: 14 for col in 'ABCDEFG'})
+
+    def _create_member_equity_sheet(self, wb: Workbook) -> None:
+        self._create_member_curve_sheet(wb, '成员权益曲线', 'members', 'equity', '成员权益曲线')
+
+    def _create_member_weight_sheet(self, wb: Workbook) -> None:
+        self._create_member_curve_sheet(wb, '权重演变', 'weights', None, '权重演变')
+
+    def _create_member_curve_sheet(self, wb: Workbook, sheet_name: str, key: str, value_key: str | None, title: str) -> None:
+        ws = wb.create_sheet(sheet_name)
+        names = self._member_names()
+        headers = ['日期'] + names
+        self._set_header_row(ws, 1, headers)
+
+        rows = len(self.member_curve)
+        for r_idx, snap in enumerate(self.member_curve, start=2):
+            date_cell = ws.cell(row=r_idx, column=1, value=snap.get('date'))
+            date_cell.border = self.THIN_BORDER
+            data = snap.get(key) or {}
+            for c_idx, name in enumerate(names, start=2):
+                if value_key:
+                    value = (data.get(name) or {}).get(value_key, 0.0)
+                else:
+                    value = data.get(name, 0.0)
+                cell = ws.cell(row=r_idx, column=c_idx, value=round(value, 4))
+                cell.border = self.THIN_BORDER
+                if isinstance(value, float):
+                    cell.number_format = self.NUM_FORMAT
+
+        if rows:
+            chart = LineChart()
+            chart.title = title
+            chart.y_axis.title = title
+            chart.x_axis.title = "日期"
+            chart.style = 10
+            chart.width = 30
+            chart.height = 15
+            data = Reference(ws, min_col=2, min_row=1, max_row=rows + 1, max_col=len(names) + 1)
+            cats = Reference(ws, min_col=1, min_row=2, max_row=rows + 1)
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
+            ws.add_chart(chart, f"A{rows + 3}")
+
+        self._set_col_widths(ws, {chr(ord('A') + i): 15 for i in range(len(names) + 1)})

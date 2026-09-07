@@ -10,14 +10,16 @@ from openpyxl import load_workbook
 
 from engines.fast import FastBacktestEngine
 from tools.data import Bar, DataRequest, InMemoryGateway, Session, TradingPhase
-from tools.excel_generator import ExcelReportGenerator
+from tools.excel_generator import ExcelReportGenerator, StreamExcelReportGenerator
 from tools.excel_report import (
     _localized_stats,
     default_output_dir,
     export_backtest_excel,
 )
+from trading_nodes_base.minds import BaseMind
 from trading_nodes_base.methods import BaseTimeSelection
 from trading_nodes_base.strategies import BaseStrategy
+from trading_nodes_base.streams import BaseStream
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest
 from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
 
@@ -91,6 +93,25 @@ def _run_engine() -> FastBacktestEngine:
     return engine
 
 
+class EqualMind(BaseMind):
+    def calculate_weights(self, market_data: dict[str, Any], strategies_performance: dict[str, dict[str, float]]) -> dict[str, float]:
+        return {name: 1.0 for name in strategies_performance}
+
+
+class NamedBuyingFastStrategy(BuyingFastStrategy):
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.strategy_name = name
+
+
+def _run_stream_engine() -> tuple[FastBacktestEngine, list[Bar]]:
+    bars = [_bar("20240102", 10.0), _bar("20240103", 11.0)]
+    stream = BaseStream("组合A", [NamedBuyingFastStrategy("s1"), NamedBuyingFastStrategy("s2")], EqualMind())
+    engine = FastBacktestEngine(stream, "20240102", "20240103", initial_capital=100_000, mode="fast", data_gateway=_gateway(bars), progress_bar=False)
+    engine.run()
+    return engine, bars
+
+
 def test_export_backtest_excel_writes_workbook(tmp_path) -> None:
     engine = _run_engine()
 
@@ -162,3 +183,27 @@ def test_generator_hooks_allow_title_override_and_sheet_extension(tmp_path) -> N
     workbook = load_workbook(save_path)
     assert workbook["策略概览"]["A1"].value == "tinyquant 组合回测报告"
     assert workbook.sheetnames[-1] == "探测Sheet"
+
+
+def test_stream_report_adds_member_breakdown_sheets(tmp_path) -> None:
+    engine, _ = _run_stream_engine()
+    gen = StreamExcelReportGenerator(
+        equity_curve=list(engine.equity_curve), daily_positions=list(engine.daily_positions),
+        trade_log=engine.account.trade_log, stats_dict=_localized_stats(engine.get_stats()),
+        strategy_name="组合A", start_date=engine.start_date, end_date=engine.end_date,
+        initial_capital=engine.initial_capital,
+        member_curve=list(engine.member_curve),
+        member_trade_logs={name: getattr(acc, "trade_log", {}) for name, acc in engine.entity.shadow_accounts.items()},
+    )
+    save_path = tmp_path / "stream.xlsx"
+    gen.generate(str(save_path))
+
+    workbook = load_workbook(save_path)
+    assert workbook.sheetnames == ["策略概览", "权益曲线", "交易记录", "持仓明细", "月度收益", "成员策略汇总", "成员权益曲线", "权重演变"]
+    assert workbook["策略概览"]["A1"].value == "tinyquant 组合回测报告"
+    summary = workbook["成员策略汇总"]
+    assert {summary["A2"].value, summary["A3"].value} == {"s1", "s2"}
+    assert summary["E2"].value is not None
+    member_eq = workbook["成员权益曲线"]
+    assert member_eq["A2"].value == "20240102"
+    assert member_eq["B2"].value is not None
