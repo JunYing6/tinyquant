@@ -128,6 +128,10 @@ def test_export_backtest_excel_writes_workbook(tmp_path) -> None:
     equity = workbook["权益曲线"]
     assert equity["A2"].value == "20240102"
     assert equity["B3"].value == pytest.approx(engine.equity_curve[-1]["equity"], abs=0.01)
+    assert equity["I1"].value == "基准"
+    assert equity["I2"].value == pytest.approx(100_000.0, abs=0.01)
+    assert len(equity._charts) == 1
+    assert len(equity._charts[0].series) == 2
     positions = workbook["持仓明细"]
     assert positions["B2"].value == "000001.SZ"
     assert positions["D2"].value == pytest.approx(10.0, abs=0.01)

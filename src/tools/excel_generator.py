@@ -176,7 +176,7 @@ class ExcelReportGenerator:
     def _create_equity_sheet(self, wb: Workbook) -> None:
         ws = wb.create_sheet('权益曲线')
 
-        headers = ['日期', '权益', '现金', '持仓市值', '持仓数量', '日收益率(%)', '累计收益率(%)', '回撤(%)']
+        headers = ['日期', '权益', '现金', '持仓市值', '持仓数量', '日收益率(%)', '累计收益率(%)', '回撤(%)', '基准']
         self._set_header_row(ws, 1, headers)
 
         df = pd.DataFrame(self.equity_curve)
@@ -197,8 +197,9 @@ class ExcelReportGenerator:
             ws.cell(row=r, column=6, value=round(row['daily_return'] * 100, 4)).border = self.THIN_BORDER
             ws.cell(row=r, column=7, value=round(row['cum_return'] * 100, 2)).border = self.THIN_BORDER
             ws.cell(row=r, column=8, value=round(row['drawdown'] * 100, 2)).border = self.THIN_BORDER
+            ws.cell(row=r, column=9, value=round(self.initial_capital, 2)).border = self.THIN_BORDER
 
-            for col in [2, 3, 4]:
+            for col in [2, 3, 4, 9]:
                 ws.cell(row=r, column=col).number_format = self.NUM_FORMAT
 
         last_row = len(df) + 2
@@ -208,7 +209,7 @@ class ExcelReportGenerator:
         ws.cell(row=last_row, column=8, value=round(df['drawdown'].min() * 100, 2))
 
         self._add_equity_chart(ws, len(df) + 1, last_row)
-        self._set_col_widths(ws, {c: 15 for c in 'ABCDEFGH'})
+        self._set_col_widths(ws, {c: 15 for c in 'ABCDEFGHI'})
 
     def _add_equity_chart(self, ws: Worksheet, data_rows: int, start_row: int) -> None:
         chart = LineChart()
@@ -220,10 +221,24 @@ class ExcelReportGenerator:
         chart.height = 15
 
         data = Reference(ws, min_col=2, min_row=1, max_row=data_rows)
+        bench = Reference(ws, min_col=9, min_row=1, max_row=data_rows)
         cats = Reference(ws, min_col=1, min_row=2, max_row=data_rows)
         chart.add_data(data, titles_from_data=True)
+        chart.add_data(bench, titles_from_data=True)
         chart.set_categories(cats)
-        chart.series[0].graphicalProperties.line.width = 25000
+
+        equity_series = chart.series[0]
+        equity_series.smooth = True
+        equity_series.graphicalProperties.line.solidFill = "4472C4"
+        equity_series.graphicalProperties.line.width = 25000
+        equity_series.marker.symbol = "none"
+
+        bench_series = chart.series[1]
+        bench_series.smooth = True
+        bench_series.marker.symbol = "none"
+        bench_series.graphicalProperties.line.dashStyle = "dash"
+        bench_series.graphicalProperties.line.solidFill = "808080"
+        bench_series.graphicalProperties.line.width = 12000
 
         ws.add_chart(chart, f"A{start_row + 2}")
 
