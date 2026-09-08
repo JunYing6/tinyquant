@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rich.console import Console
+from rich.progress import Progress
 
 from tinyquant_cli.loading import FactoryContractError, load_backtest_factory
 from tinyquant_cli.render import render_backtest, render_error
@@ -32,7 +33,20 @@ def run_backtest(
             data_gateway=data_gateway,
             progress_bar=False,
         )
-        engine.run()
+        with Progress(console=console, transient=True) as progress:
+            task_id = progress.add_task("回测进行中", total=None)
+
+            def _on_progress(message: str, index: int, total: int) -> None:
+                if progress.tasks[task_id].total is None:
+                    progress.update(task_id, total=total)
+                progress.update(
+                    task_id,
+                    completed=index,
+                    description=f"回测中 {message} ({index}/{total})",
+                )
+
+            engine.progress_callback = _on_progress
+            engine.run()
         stats = engine.get_stats()
         if not stats:
             raise RuntimeError("backtest produced no equity curve")
