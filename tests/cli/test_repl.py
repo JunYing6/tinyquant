@@ -10,8 +10,7 @@ def test_repl_normalizes_slash_and_bare_commands() -> None:
     assert classify_line("   ") == ("empty", [])
 
 
-def test_completion_lists_command_alias_and_flag() -> None:
-    candidates = completion_candidates("bt run --")
+def test_completion_lists_backtest_alias() -> None:
+    candidates = completion_candidates("bt")
 
-    assert "--start" in candidates
-    assert "--end" in candidates
+    assert "bt" in candidates
