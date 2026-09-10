@@ -66,28 +66,33 @@ tq
 ```bash
 tq help
 tq doctor
-tq backtest run package.module:function --start 20240102 --end 20241231
+tq backtest
 ```
 
 REPL 同时接受 `command` 和 `/command` 格式，支持自动补全，保存本地命令历史，并将诊断信息和回测摘要以紧凑的量化工作台表格形式呈现。`help`、`doctor` 和 `backtest` 是 1.1 版本的完整命令集；CLI 不包含研究、注册表、下载、持久化结果、提供者配置或实盘交易命令。
 
-`tq backtest run` 会加载一个无参数的 Python 工厂函数，该函数必须准确返回：
+`tq backtest` 进入交互式回测向导，依次选择回测类型（策略/Stream）、具体回测项目、开始日期、结束日期、初始资金、运行模式，以及是否导出 Excel。
+
+可运行的回测清单由用户项目提供：模块（默认 `trading_nodes.backtests`，可用环境变量 `TINYQUANT_BACKTEST_MODULE` 覆盖）暴露一个 `BACKTESTS` 列表，每项为：
 
 ```python
-(BaseStrategy | BaseStream, DataGateway)
+{
+    "name": "展示名称",
+    "kind": "strategy",  # 或 "stream"
+    "factory": "module:factory",  # 无参工厂，返回 (BaseStrategy | BaseStream, DataGateway)
+}
 ```
 
-工厂函数负责创建策略并组装数据网关。CLI 参数只能覆盖开始日期、结束日期、资金和运行模式；数据供应商选择、重试和数据质量策略由 `DataGateway` 负责。
+工厂函数负责创建策略并组装数据网关；数据供应商选择、重试和数据质量策略由 `DataGateway` 负责。
 
 ## Excel 回测报告
 
-`tq backtest run` 默认不导出 Excel，只有显式传入 `--excel`（写入默认目录）或 `--excel-dir <路径>`（写入指定目录）时才生成工作簿，包含五个 Sheet：策略概览、权益曲线（含权益走势图）、交易记录、持仓明细、月度收益（含月度收益图）。
+`tq backtest` 向导默认不导出 Excel，仅在向导末尾选择"是否导出 Excel"为 `y` 时生成工作簿，包含五个 Sheet：策略概览、权益曲线（含权益走势图）、交易记录、持仓明细、月度收益（含月度收益图）。Stream 报告在此基础上增加成员策略汇总、成员权益曲线、权重演变三个 Sheet。
 
 输出目录的解析顺序：
 
-1. `--excel-dir <路径>` 显式指定；
-2. 环境变量 `TINYQUANT_EXCEL_DIR`；
-3. 使用默认目录 `excel_reports/`（输出时不存在会自动创建）。
+1. 环境变量 `TINYQUANT_EXCEL_DIR`；
+2. 使用默认目录 `excel_reports/`（输出时不存在会自动创建）。
 
 文件名格式为 `{策略名}_{开始日期}_{结束日期}_{时间戳}.xlsx`。
 
