@@ -44,10 +44,20 @@ def _backtest_handler(console: Console, state: SessionState):
     return handler
 
 
+def _live_handler(console: Console, state: SessionState):
+    def handler(args: argparse.Namespace) -> int:
+        from tinyquant_cli.live import run_live_wizard
+
+        return run_live_wizard(console, state)
+
+    return handler
+
+
 def build_registry(console: Console, state: SessionState) -> Registry:
     registry = Registry()
     registry.register(Command("help", "Run", "Show command help", ["?"], _configure_help, _help_handler(console, state)))
     registry.register(Command("backtest", "Run", "交互式回测向导", ["bt"], None, _backtest_handler(console, state)))
+    registry.register(Command("live", "Run", "交互式实盘交易", [], None, _live_handler(console, state)))
     registry.register(Command("doctor", "Diagnostics", "Check the local runtime", ["diag"], _configure_doctor, _doctor_handler(console, state)))
     return registry
 
