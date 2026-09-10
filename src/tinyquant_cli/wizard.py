@@ -3,6 +3,13 @@ from __future__ import annotations
 import importlib
 import os
 from datetime import datetime
+from typing import Any, Callable
+
+from rich.console import Console
+from prompt_toolkit import PromptSession
+
+from tinyquant_cli.render import render_error
+from tinyquant_cli.runtime import SessionState
 
 DEFAULT_MODULE = "trading_nodes.backtests"
 MODULE_ENV = "TINYQUANT_BACKTEST_MODULE"
@@ -82,3 +89,83 @@ def parse_mode(value: str) -> str:
     if mode not in _VALID_MODES:
         raise WizardError(f"mode must be one of {sorted(_VALID_MODES)}")
     return mode
+
+
+def _ask(session: PromptSession, console: Console, label: str, default: str, parse: Callable[[str], Any]) -> Any:
+    while True:
+        raw = session.prompt(f"{label} [默认 {default}]: ", default=default)
+        if not raw.strip():
+            return default
+        try:
+            return parse(raw)
+        except WizardError as error:
+            console.print(str(error))
+
+
+def _ask_kind(session: PromptSession, console: Console) -> str:
+    while True:
+        raw = session.prompt("回测类型 (1=策略, 2=Stream) [1]: ", default="1")
+        value = raw.strip()
+        if value in ("", "1"):
+            return "strategy"
+        if value in ("2", "stream"):
+            return "stream"
+        console.print("请输入 1(策略) 或 2(Stream)")
+
+
+def _ask_entry(session: PromptSession, console: Console, items: list[dict]) -> dict:
+    listing = "\n".join(f"  {index}. {entry['name']}" for index, entry in enumerate(items, 1))
+    first = items[0]["name"]
+    while True:
+        raw = session.prompt(f"请选择 (编号或名称):\n{listing}\n> ", default=first)
+        try:
+            return resolve_choice(items, raw)
+        except WizardError as error:
+            console.print(str(error))
+
+
+def _ask_excel(session: PromptSession, console: Console) -> bool:
+    while True:
+        raw = session.prompt("是否导出 Excel? (y/N): ", default="n")
+        value = raw.strip().lower()
+        if value in ("", "n"):
+            return False
+        if value == "y":
+            return True
+        console.print("请输入 y 或 N")
+
+
+def run_backtest_wizard(console: Console, state: SessionState, module_name: str | None = None) -> int:
+    try:
+        backtests = load_backtests(module_name)
+    except WizardError as error:
+        render_error(console, str(error))
+        return 2
+    try:
+        import prompt_toolkit  # noqa: F401
+    except ImportError:
+        render_error(console, "wizard requires prompt_toolkit; pip install tinyquant[cli]")
+        return 2
+    session = PromptSession()
+    try:
+        kind = _ask_kind(session, console)
+        items = filter_by_kind(backtests, kind)
+        if not items:
+            render_error(console, f"no backtests registered for kind {kind!r}")
+            return 2
+        chosen = _ask_entry(session, console, items)
+        start = _ask(session, console, "开始日期", "20240101", parse_date)
+        end = _ask(session, console, "结束日期", "20241231", parse_date)
+        validate_window(start, end)
+        capital = _ask(session, console, "初始资金", "1000000", parse_capital)
+        mode = _ask(session, console, "运行模式", "auto", parse_mode)
+        excel = _ask_excel(session, console)
+    except WizardError as error:
+        render_error(console, str(error))
+        return 2
+    except (EOFError, KeyboardInterrupt):
+        console.print("回测已取消", style="cyan")
+        return 2
+    from tinyquant_cli.commands.backtest import run_backtest
+
+    return run_backtest(console, state, chosen["factory"], start, end, capital, mode, write_excel=excel)

@@ -22,9 +22,9 @@ def test_one_shot_invalid_arguments_returns_nonzero(capsys) -> None:
     assert "Invalid command arguments" in capsys.readouterr().err
 
 
-def test_group_command_backtest_without_subcommand_shows_help(capsys) -> None:
-    assert app.main(["backtest"]) == 0
-    assert "Run" in capsys.readouterr().out
+def test_backtest_command_enters_wizard_aborts_without_stdin(capsys) -> None:
+    assert app.main(["backtest"]) == 2
+    assert "backtest" in capsys.readouterr().out.lower()
 
 
 def test_cli_runtime_root_takes_import_precedence(monkeypatch, tmp_path) -> None:

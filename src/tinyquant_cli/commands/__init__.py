@@ -7,7 +7,6 @@ from typing import Any
 
 from rich.console import Console
 
-from tinyquant_cli.commands.backtest import run_backtest
 from tinyquant_cli.commands.doctor import run_doctor
 from tinyquant_cli.commands.help import run_help
 from tinyquant_cli.registry import Command, Registry
@@ -36,35 +35,11 @@ def _doctor_handler(console: Console, state: SessionState):
     return handler
 
 
-def _configure_backtest(parser: argparse.ArgumentParser) -> None:
-    subparsers = parser.add_subparsers(dest="action")
-    run_parser = subparsers.add_parser("run", help="run a provider-driven backtest")
-    run_parser.add_argument("factory", help="zero-argument module:function factory")
-    run_parser.add_argument("--start", required=True, help="start date YYYYMMDD")
-    run_parser.add_argument("--end", required=True, help="end date YYYYMMDD")
-    run_parser.add_argument("--capital", type=float, default=1_000_000.0)
-    run_parser.add_argument("--mode", choices=["auto", "fast", "tick"], default="auto")
-    run_parser.add_argument("--excel", action="store_true", help="write the Excel backtest report")
-    run_parser.add_argument("--excel-dir", default=None, help="Excel report output directory (default: ./excel_reports)")
-
-
 def _backtest_handler(console: Console, state: SessionState):
     def handler(args: argparse.Namespace) -> int:
-        if args.action is None:
-            return run_help(console, "backtest")
-        if args.action != "run":
-            return 2
-        return run_backtest(
-            console,
-            state,
-            args.factory,
-            args.start,
-            args.end,
-            args.capital,
-            args.mode,
-            excel_dir=args.excel_dir,
-            write_excel=args.excel or args.excel_dir is not None,
-        )
+        from tinyquant_cli.wizard import run_backtest_wizard
+
+        return run_backtest_wizard(console, state)
 
     return handler
 
@@ -72,7 +47,7 @@ def _backtest_handler(console: Console, state: SessionState):
 def build_registry(console: Console, state: SessionState) -> Registry:
     registry = Registry()
     registry.register(Command("help", "Run", "Show command help", ["?"], _configure_help, _help_handler(console, state)))
-    registry.register(Command("backtest", "Run", "Run a provider-driven backtest", ["bt"], _configure_backtest, _backtest_handler(console, state)))
+    registry.register(Command("backtest", "Run", "交互式回测向导", ["bt"], None, _backtest_handler(console, state)))
     registry.register(Command("doctor", "Diagnostics", "Check the local runtime", ["diag"], _configure_doctor, _doctor_handler(console, state)))
     return registry
 
