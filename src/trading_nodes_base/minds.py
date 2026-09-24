@@ -1,4 +1,4 @@
-"""Strategy-combination mind base."""
+"""策略组合（mind）基类。"""
 
 from __future__ import annotations
 

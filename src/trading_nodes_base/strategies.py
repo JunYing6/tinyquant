@@ -1,4 +1,4 @@
-"""Single-strategy runtime base with provider-neutral account boundaries."""
+"""单策略运行时基类，含提供者无关的账户边界。"""
 
 from __future__ import annotations
 
@@ -153,7 +153,7 @@ class BaseStrategy:
             self.timer.selector_pool = list(target_pool)
             self.timer.position_pool = list(self.current_positions)
             self.timer.stock_pool = list(dict.fromkeys([*target_pool, *self.current_positions]))
-            self.timer.on_daily(target_pool, self.current_positions, self._account_info())
+            self.timer.on_daily(target_pool, self.current_positions, self._account_info(), filter_codes=self.selector is not None)
         self.context.set("selection_passed_to_timer", True)
 
     def _account_info(self) -> Dict[str, Any]:

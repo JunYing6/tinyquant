@@ -1,13 +1,13 @@
-"""Base classes and shared contracts for tinyquant trading nodes.
+"""tinyquant 交易节点的基类与共享契约。
 
-The seven public bases are re-exported here so user code can import them
-directly from the package root.  The re-export is lazy (PEP 562): importing
-``trading_nodes_base`` alone does not pull the category modules, which keeps
-``tools.data`` free to import ``trading_nodes_base.types`` without a cycle.
+七个公开基类在此统一重导出，方便用户代码直接从包根导入。
+重导出是惰性的（PEP 562）：仅导入 ``trading_nodes_base`` 不会拉取各分类
+模块，从而让 ``tools.data`` 可以无环地导入 ``trading_nodes_base.types``。
 """
 
 _EXPORT_MODULES = {
     "BaseFactor": "trading_nodes_base.factors",
+    "BaseGridStrategy": "trading_nodes_base.strategies",
     "BaseMind": "trading_nodes_base.minds",
     "BaseRiskControl": "trading_nodes_base.methods",
     "BaseStockPicking": "trading_nodes_base.methods",

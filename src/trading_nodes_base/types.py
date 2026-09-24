@@ -1,4 +1,4 @@
-"""Pure value objects shared by trading factors and execution code."""
+"""交易因子与执行代码共享的纯值对象。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ RISK_KINDS = frozenset({"event", "float"})
 
 
 class ExecutionMode(StrEnum):
-    """Execution behavior selected by the matching or broker layer."""
+    """由撮合层或券商层选定的执行行为。"""
 
     LIMIT = "limit"
     BUY1 = "buy1"
@@ -42,7 +42,7 @@ _FREQUENCY_PATTERN = re.compile(r"[1-9][0-9]*[mhd]\Z")
 
 
 def normalize_frequency(value: str) -> str:
-    """Validate and return a canonical K-line frequency."""
+    """校验并返回规范的 K 线频率。"""
     if not isinstance(value, str) or _FREQUENCY_PATTERN.fullmatch(value) is None:
         raise ValueError(
             "frequency must be a positive integer followed by m, h, or d"
@@ -151,7 +151,7 @@ class ExecutionRequest:
 
 @dataclass(frozen=True)
 class RiskSignal:
-    """A factual risk signal; it does not place orders or mutate an account."""
+    """事实性风险信号；不下单、不改变账户。"""
 
     triggered: bool
     risk_kind: str

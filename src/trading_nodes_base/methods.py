@@ -1,4 +1,4 @@
-"""Provider-neutral selector, timer, and risk-control bases."""
+"""提供者无关的选股器、择时器与风控基类。"""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def _selection_kind_from_identity(factor: BaseFactor) -> str:
 
 
 class BaseComponent(ABC):
-    """Internal shared factor routing and context-injection implementation."""
+    """内部共享的因子路由与上下文注入实现。"""
 
     def __init__(self, name: str) -> None:
         self.name = name
@@ -514,13 +514,18 @@ class BaseTimeSelection(BaseComponent):
     def on_orders_executed(self, executed_orders: List[Dict[str, Any]]) -> None:
         pass
 
-    def on_daily(self, pool: List[str], positions: Dict[str, Any], account_info: Optional[Dict[str, Any]] = None, extra_data: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+    def on_daily(self, pool: List[str], positions: Dict[str, Any], account_info: Optional[Dict[str, Any]] = None, extra_data: Optional[Dict[str, Dict[str, Any]]] = None, filter_codes: bool = True) -> None:
         for factor in self.all_factors:
             factor.reset_targets()
         self.update_positions(positions)
         self.set_stock_pool(pool)
         self.account_info = account_info
         self._extra_data = extra_data
+        # 存在选股池时，把"股票池 ∪ 持仓池"下发给每个因子作 target，
+        # 因子通过 is_target_code 直接跳过池外代码的 bar/tick；无池(无 selector)则不设目标。
+        if filter_codes:
+            for factor in self.all_factors:
+                factor.set_targets(set(self.stock_pool))
         self._daily_logic()
 
     def kline_bar_input(self, bar: KlineBar) -> List[SignalIntent]:

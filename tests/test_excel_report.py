@@ -49,7 +49,6 @@ class PassiveQueryFactor(KlineTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_bar(self, bar: object) -> list:
@@ -65,7 +64,6 @@ class PassiveIntentExecutor(TickTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
 

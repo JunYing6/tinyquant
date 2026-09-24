@@ -263,7 +263,6 @@ class RecordingKlineFactor(KlineTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_bar(self, bar: KlineBar) -> list[SignalIntent]:
@@ -277,7 +276,6 @@ class NoopTickFactor(TickTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
 

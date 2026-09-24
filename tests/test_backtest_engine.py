@@ -42,7 +42,6 @@ class PassiveKlineFactor(KlineTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_bar(self, bar: KlineBar) -> list[SignalIntent]:
@@ -58,7 +57,6 @@ class PassiveIntentExecutor(TickTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
 
@@ -86,7 +84,6 @@ class DirectBuyTickFactor(TickTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[ExecutionRequest]:
@@ -108,7 +105,6 @@ class SequenceRecordingFactor(TickTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[ExecutionRequest]:
@@ -131,7 +127,6 @@ class NextBarBuyFactor(KlineTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_bar(self, bar: KlineBar) -> list[SignalIntent]:

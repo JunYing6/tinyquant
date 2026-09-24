@@ -142,7 +142,6 @@ class DirectLiveBuyFactor(TickTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[Any]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_tick(
@@ -178,7 +177,6 @@ class QueryingTickFactor(TickTimingFactor):
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[Any]:
         self._data_clear()
-        self.sign["fit"] = True
         return [{"scope": "market/daily", "params": {"date": "20240102"}}]
 
 

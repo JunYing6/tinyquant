@@ -84,7 +84,6 @@ class FakeMatcher:
 class QueryFactor(BaseFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
@@ -93,7 +92,6 @@ class QueryFactor(BaseFactor):
 
 class NoClearFactor(BaseFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
-        self.sign["fit"] = True
         return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
@@ -103,7 +101,6 @@ class NoClearFactor(BaseFactor):
 class DuplicateRequestFactor(BaseFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return [
             {"scope": "market/daily", "params": {"date": date, "fields": ["close"]}},
             {"scope": "market/daily", "params": {"date": date, "fields": ["volume"]}},
@@ -117,7 +114,6 @@ class DuplicateRequestFactor(BaseFactor):
 class MappingRequestFactor(BaseFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[dict]:
         self._data_clear()
-        self.sign["fit"] = True
         return [{
             "domain": "market",
             "kind": "daily",
@@ -135,7 +131,6 @@ class RequestFormsFactor(BaseFactor):
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list:
         self._data_clear()
-        self.sign["fit"] = True
         params = {"date": date, "fields": ["close"]}
         if self.request_form == "data_request":
             return [{"scope": "market/daily", "params": params, "idx": "request"}]
@@ -158,7 +153,6 @@ class RequestFormsFactor(BaseFactor):
 class BinaryFactor(BinarySelectionFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
@@ -168,17 +162,16 @@ class BinaryFactor(BinarySelectionFactor):
 class QuerylessBinaryFactor(BinarySelectionFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
         return pd.Series({"000001.SZ": 1, "000002.SZ": 0})
 
 
-class UnreadyQuerylessBinaryFactor(BinarySelectionFactor):
+class PendingRequestBinaryFactor(BinarySelectionFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list:
         self._data_clear()
-        return []
+        return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
         return pd.Series({"000001.SZ": 1, "000002.SZ": 0})
@@ -187,7 +180,6 @@ class UnreadyQuerylessBinaryFactor(BinarySelectionFactor):
 class FloatFactor(FloatSelectionFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
     def _calculate_internal(self, data_cache: dict) -> pd.Series:
@@ -204,7 +196,6 @@ class KlineFactor(KlineTimingFactor):
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_bar(self, bar: KlineBar) -> list[SignalIntent]:
@@ -216,7 +207,6 @@ class HistoryClearingKlineFactor(KlineTimingFactor):
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         self.set_targets({"000001.SZ"})
         return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
@@ -226,7 +216,6 @@ class TickFactor(TickTimingFactor):
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_tick(
@@ -249,7 +238,6 @@ class DirectTickFactor(TickTimingFactor):
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_tick(
@@ -272,7 +260,6 @@ class Timer(BaseTimeSelection):
 class RiskBarFactor(RiskKlineFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
     def on_bar(self, bar: KlineBar) -> list[RiskSignal]:
@@ -317,18 +304,12 @@ def test_factor_lifecycle_normalizes_output_and_component_routes_queries() -> No
     assert factor.calculate().index.name == "ts_code"
 
 
-def test_factor_requires_fit_and_data_and_consumes_one_shot_request_state() -> None:
+def test_factor_requires_data_and_consumes_one_shot_request_state() -> None:
     factor = QueryFactor("readiness")
-    factor.sign["fit"] = True
     with pytest.raises(ValueError, match="Data not ready"):
         factor.calculate()
 
-    factor._data_clear()
-    factor.sign["data"] = True
-    with pytest.raises(ValueError, match="Data not ready"):
-        factor.calculate()
-
-    query = factor.get_query_lst("20240102")[0]
+    factor.get_query_lst("20240102")
     factor.receive_data({"idx": "001"}, object())
     assert factor.calculate().iloc[0] == 1.0
     with pytest.raises(ValueError, match="Data not ready"):
@@ -1154,13 +1135,13 @@ def test_queryless_or_factor_is_calculated_before_float_and_done() -> None:
 
 
 def test_queryless_stage_requires_factor_readiness_before_advancing() -> None:
-    unready_picker = Picker(
-        "queryless-unready", [UnreadyQuerylessBinaryFactor("and")], [], []
+    pending_picker = Picker(
+        "queryless-pending", [PendingRequestBinaryFactor("and")], [], []
     )
 
-    assert unready_picker.get_queries("20240102") == []
-    assert not unready_picker.check_data()
-    assert not unready_picker.is_done()
+    assert pending_picker.get_queries("20240102") != []
+    assert not pending_picker.check_data()
+    assert not pending_picker.is_done()
 
     ready_picker = Picker(
         "queryless-ready", [], [QuerylessBinaryFactor("or")], []

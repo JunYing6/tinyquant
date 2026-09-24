@@ -59,7 +59,6 @@ class _EmptyKline(KlineTimingFactor):
 
     def get_query_lst(self, date: Any, codes: list[str] | None = None) -> list:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
 
@@ -71,7 +70,6 @@ class _EmptyTick(TickTimingFactor):
 
     def get_query_lst(self, date: Any, codes: list[str] | None = None) -> list:
         self._data_clear()
-        self.sign["fit"] = True
         return []
 
 

@@ -1,4 +1,4 @@
-"""Provider-neutral multi-strategy stream base."""
+"""提供者无关的多策略组合流（stream）基类。"""
 
 from __future__ import annotations
 

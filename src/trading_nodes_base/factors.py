@@ -1,4 +1,4 @@
-"""Provider-neutral factor bases and governed output contracts."""
+"""提供者无关的因子基类与受治理的输出契约。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class _GovernedFactorMeta(ABCMeta):
 
 
 class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
-    """Base lifecycle for factors that consume routed data or context."""
+    """消费被路由数据或上下文信息的因子的基础生命周期。"""
 
     output_schema = "series"
 
@@ -73,11 +73,9 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         self._history_received_data: Dict[str, Any] = {}
         self._request_status: Dict[str, bool] = {}
         self._history_request_status: Dict[str, bool] = {}
-        self._fit_request_status: Dict[str, bool] = {}
-        self._history_fit_request_status: Dict[str, bool] = {}
         self._expected_request_ids: List[str] = []
         self._history_expected_request_ids: List[str] = []
-        self.sign: Dict[str, bool] = {"fit": False, "data": False}
+        self.sign: Dict[str, bool] = {"data": False}
         self._current_date: Any = None
         self._generation_counter = 0
         self._active_generation: Optional[int] = None
@@ -95,7 +93,7 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
     def get_query_lst(
         self, date: Any, codes: Optional[List[str]] = None
     ) -> List[Any]:
-        """Return declarative data requests for the given date."""
+        """返回针对给定日期的声明式数据请求。"""
 
     def receive_data(self, sign: dict, data: Any) -> None:
         request_id = sign.get("request_id")
@@ -110,11 +108,6 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         )
         request_status = (
             self._history_request_status if is_history else self._request_status
-        )
-        fit_request_status = (
-            self._history_fit_request_status
-            if is_history
-            else self._fit_request_status
         )
         received_data = (
             self._history_received_data if is_history else self._received_data
@@ -141,22 +134,17 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
                 return
             request_id = pending[0] if pending else str(sign.get("idx", "001"))
         key = str(request_id)
-        if request_status.get(key, False) or fit_request_status.get(key, False):
+        if request_status.get(key, False):
             return
         received_data[key] = data
-        if sign.get("fit_sign", False):
-            fit_request_status[key] = True
-            if not is_history:
-                self.sign["fit"] = all(self._fit_request_status.values())
-        else:
-            request_status[key] = True
-            if not is_history and self._expected_request_ids:
-                self.sign["data"] = all(
-                    self._request_status.get(expected, False)
-                    for expected in self._expected_request_ids
-                )
-            elif not is_history:
-                self.sign["data"] = all(self._request_status.values())
+        request_status[key] = True
+        if not is_history and self._expected_request_ids:
+            self.sign["data"] = all(
+                self._request_status.get(expected, False)
+                for expected in self._expected_request_ids
+            )
+        elif not is_history:
+            self.sign["data"] = all(self._request_status.values())
 
     def _register_request(self, request_id: str, history: bool = False) -> None:
         expected_request_ids = (
@@ -175,15 +163,13 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         if history:
             self._history_received_data.clear()
             self._history_request_status.clear()
-            self._history_fit_request_status.clear()
             self._history_expected_request_ids.clear()
             self._active_history_generation = generation
         else:
             self._received_data.clear()
             self._request_status.clear()
-            self._fit_request_status.clear()
             self._expected_request_ids.clear()
-            self.sign = {"fit": False, "data": False}
+            self.sign = {"data": False}
             self._active_generation = generation
             self._legacy_generation = token is None
         return generation
@@ -192,17 +178,15 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         if history:
             self._history_received_data.clear()
             self._history_request_status.clear()
-            self._history_fit_request_status.clear()
             self._history_expected_request_ids.clear()
             self._active_history_generation = None
             return
         self._received_data.clear()
         self._request_status.clear()
-        self._fit_request_status.clear()
         self._expected_request_ids.clear()
         self._active_generation = None
         self._legacy_generation = False
-        self.sign = {"fit": False, "data": False}
+        self.sign = {"data": False}
 
     def _mark_generation_ready(self, history: bool = False) -> None:
         if history:
@@ -215,7 +199,6 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
     def _is_ready(self) -> bool:
         return bool(
             self._active_generation is not None
-            and self.sign.get("fit")
             and self.sign.get("data")
             and all(
                 self._request_status.get(request_id, False)
@@ -229,8 +212,6 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
             dict(self._history_received_data),
             dict(self._request_status),
             dict(self._history_request_status),
-            dict(self._fit_request_status),
-            dict(self._history_fit_request_status),
             list(self._expected_request_ids),
             list(self._history_expected_request_ids),
             dict(self.sign),
@@ -247,8 +228,6 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
             history_received_data,
             request_status,
             history_request_status,
-            fit_request_status,
-            history_fit_request_status,
             expected_request_ids,
             history_expected_request_ids,
             sign,
@@ -266,10 +245,6 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         self._request_status.update(request_status)
         self._history_request_status.clear()
         self._history_request_status.update(history_request_status)
-        self._fit_request_status.clear()
-        self._fit_request_status.update(fit_request_status)
-        self._history_fit_request_status.clear()
-        self._history_fit_request_status.update(history_fit_request_status)
         self._expected_request_ids[:] = expected_request_ids
         self._history_expected_request_ids[:] = history_expected_request_ids
         self.sign.clear()
@@ -281,7 +256,7 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         self._legacy_generation = legacy_generation
 
     def _data_clear(self) -> None:
-        """Prepare a legacy direct factor request without affecting history."""
+        """准备一次不影响历史数据的传统直连因子请求。"""
         if self._active_generation is None:
             self._begin_request_generation()
             return
@@ -290,9 +265,8 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
             return
         self._received_data.clear()
         self._request_status.clear()
-        self._fit_request_status.clear()
         self._expected_request_ids.clear()
-        self.sign = {"fit": False, "data": False}
+        self.sign = {"data": False}
 
     def calculate(
         self, date: Optional[Any] = None, codes: Optional[Set[str]] = None
@@ -368,7 +342,7 @@ class RiskFloatFactor(BaseFactor):
 
 
 class StreamFactor(BaseFactor):
-    """Common target-code state for live K-line and tick factors."""
+    """实时 K 线与 tick 因子共用的目标代码状态。"""
 
     def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(factor_name, params)
