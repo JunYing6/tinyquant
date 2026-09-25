@@ -213,11 +213,27 @@ class ExcelReportGenerator:
     def _add_equity_chart(self, ws: Worksheet, data_rows: int, start_row: int) -> None:
         chart = LineChart()
         chart.title = "权益曲线"
-        chart.y_axis.title = "权益"
-        chart.x_axis.title = "日期"
-        chart.style = 10
+        chart.style = 2
         chart.width = 30
         chart.height = 15
+
+        # 显式显示两条坐标轴及刻度标签，避免缺失坐标轴
+        chart.x_axis.delete = False
+        chart.y_axis.delete = False
+        chart.x_axis.title = "日期"
+        chart.y_axis.title = "权益"
+        chart.x_axis.tickLblPos = "nextTo"
+        chart.y_axis.tickLblPos = "nextTo"
+        chart.x_axis.majorTickMark = "out"
+        chart.y_axis.majorTickMark = "out"
+
+        # 去掉深色网格线（黑条纹），保留干净的图表背景
+        chart.x_axis.majorGridlines = None
+        chart.y_axis.majorGridlines = None
+
+        # 坐标轴数值/日期格式
+        chart.y_axis.numFmt = "0"
+        chart.x_axis.numFmt = "yyyy-mm-dd"
 
         data = Reference(ws, min_col=2, min_row=1, max_row=data_rows)
         bench = Reference(ws, min_col=9, min_row=1, max_row=data_rows)
@@ -239,7 +255,7 @@ class ExcelReportGenerator:
         bench_series.graphicalProperties.line.solidFill = "808080"
         bench_series.graphicalProperties.line.width = 12000
 
-        ws.add_chart(chart, f"A{start_row + 2}")
+        ws.add_chart(chart, "K2")
 
     def _create_trades_sheet(self, wb: Workbook) -> None:
         ws = wb.create_sheet('交易记录')
