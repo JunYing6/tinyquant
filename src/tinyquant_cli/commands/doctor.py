@@ -25,7 +25,7 @@ def run_doctor(console: Console, factory_path: str | None) -> int:
             healthy = False
     try:
         __import__("engines")
-        __import__("trading")
+        __import__("trading_nodes_base")
         __import__("tools")
         rows["core imports"] = "ready"
     except Exception as error:
