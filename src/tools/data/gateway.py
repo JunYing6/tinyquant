@@ -1,27 +1,23 @@
-"""Catalog-driven data gateway: routing, fallback, provenance and calendar routing.
+"""目录驱动的数据网关：路由、回退、溯源与日历路由。
 
-Task 4 of the unified data-extension interface.  :class:`DataGateway` is the
-concrete orchestrator an application talks to.  It owns no data itself --
-instead it routes a request to the right adapter using the :class:`DataCatalog`
-contracts and the adapter :class:`AdapterDescriptor`/:class:`DataBinding`
-capability declarations, validates every batch, threads a single ``request_id``
-through a call and all of its errors, applies retry / fallback policy, and
-assembles :class:`DataProvenance` so consumers can audit exactly where and how
-each result was produced.
+统一数据扩展接口的任务 4。:class:`DataGateway` 是应用程序实际交互的编排器。
+它自身不持有任何数据——而是借助 :class:`DataCatalog` 契约、适配器的
+:class:`AdapterDescriptor`/:class:`DataBinding` 能力声明，把请求路由到正确的
+适配器，校验每个批次，将单个 ``request_id`` 贯穿一次调用及其所有错误，
+应用重试/回退策略，并组装 :class:`DataProvenance`，使使用者能够审计每个
+结果是在何处、以何种方式产出的。
 
-Design rules enforced here:
+此处强制遵循的设计规则：
 
-* Adapters are never constructed here and nothing connects to an external
-  source in this module; adapters come in already built via ``bindings``.
-* A :class:`DataRequest` routed through :meth:`read`/:meth:`iterate` uses the
-  ``historical`` mode; :meth:`subscribe` uses ``push``; :meth:`poll`` uses
-  ``poll``; :meth:`recover` uses ``recovery``.  :meth:`sessions` uses a
-  dedicated calendar route keyed on ``calendar.session`` and never consults the
-  ``DataRequest`` router.
-* Only ``DataSourceError(retryable=True)`` is retried, and only up to
-  ``policy.max_retries`` with ``policy.retry_backoff`` between attempts.
-  Contract / point-in-time / quality / unsupported errors never retry and never
-  fall back.
+* 本模块从不构造适配器，也不连接任何外部数据源；适配器经由 ``bindings``
+  以已构建好的形式传入。
+* 经 :meth:`read`/:meth:`iterate` 路由的 :class:`DataRequest` 使用
+  ``historical`` 模式；:meth:`subscribe` 使用 ``push``；:meth:`poll` 使用
+  ``poll``；:meth:`recover` 使用 ``recovery``。:meth:`sessions` 使用以
+  ``calendar.session`` 为键的专用日历路由，绝不经过 ``DataRequest`` 路由。
+* 仅 ``DataSourceError(retryable=True)`` 会被重试，且最多
+  ``policy.max_retries`` 次，两次尝试之间间隔 ``policy.retry_backoff``。
+  契约/时点/质量/不支持的错误从不重试，也从不回退。
 """
 
 from __future__ import annotations
@@ -86,7 +82,7 @@ _CALENDAR_REQUEST_FIELDS = ("market", "start", "end", "timezone", "include_close
 
 
 class _Candidate:
-    """A routable (dataset, mode) -> adapter mapping with its metadata."""
+    """一个可路由的 (dataset, mode) -> 适配器映射及其元数据。"""
 
     __slots__ = ("binding", "descriptor", "adapter", "capability")
 
@@ -108,7 +104,7 @@ def _now() -> datetime:
 
 
 class DataGateway:
-    """Orchestrates routing, validation, provenance, retry and fallback."""
+    """编排路由、校验、溯源、重试与回退。"""
 
     def __init__(
         self,
@@ -129,7 +125,7 @@ class DataGateway:
         self._bind_adapter_bindings(bindings)
 
     # ------------------------------------------------------------------
-    # Construction / binding validation
+    # 构造 / 绑定校验
     # ------------------------------------------------------------------
 
     def _bind_adapter_bindings(self, bindings: Any) -> None:
@@ -216,15 +212,15 @@ class DataGateway:
                     )
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # 生命周期
     # ------------------------------------------------------------------
 
     def open(self) -> None:
-        """Mark the gateway open.  Idempotent; never connects externally."""
+        """将网关标记为已打开。幂等；从不连接外部。"""
         self._open = True
 
     def close(self) -> None:
-        """Close every adapter that exposes ``close``.  Idempotent."""
+        """关闭每个暴露 ``close`` 方法的适配器。幂等。"""
         if not self._open:
             return
         for adapter in self._adapters:
@@ -249,16 +245,15 @@ class DataGateway:
         return self._policy
 
     # ------------------------------------------------------------------
-    # Internals
+    # 内部实现
     # ------------------------------------------------------------------
 
     def _validate_request(self, request: Any, definition: Any, request_id: str) -> None:
-        """Contract-validate a request where the request shape supports it.
+        """在请求结构支持之处对请求做契约校验。
 
-        :class:`DataRequest` carries the ``filters`` shape that
-        :func:`validate_request` inspects; streaming requests
-        (:class:`StreamRequest`) have no ``filters`` and are validated by
-        construction, so they are skipped here.
+        :class:`DataRequest` 携带 :func:`validate_request` 所检查的
+        ``filters`` 结构；流式请求（:class:`StreamRequest`）没有 ``filters``，
+        且已在构造时完成校验，故此处跳过。
         """
         if not isinstance(request, DataRequest):
             return
@@ -379,7 +374,7 @@ class DataGateway:
         return None
 
     # ------------------------------------------------------------------
-    # History (read / iterate)
+    # 历史（read / iterate）
     # ------------------------------------------------------------------
 
     def _try_read(
@@ -468,7 +463,7 @@ class DataGateway:
             return batch
 
     def read(self, request: DataRequest, route: RouteOptions | None = None) -> DataBatch:
-        """Read a historical batch through the best-matching adapter."""
+        """经由最匹配的适配器读取历史批次。"""
         request_id = uuid.uuid4().hex
         try:
             definition = self._catalog.get(request.dataset)
@@ -488,12 +483,11 @@ class DataGateway:
             raise
 
     def iterate(self, request: DataRequest, chunk_size: int = 10_000, route: RouteOptions | None = None) -> Iterator[DataBatch]:
-        """Yield validated batches chunk by chunk.
+        """按块逐批产出经过校验的批次。
 
-        Each chunk is validated and re-provenanced with the same ``request_id``.
-        Source errors raised during iteration are wrapped and propagated with the
-        request id -- they are deliberately *not* retried or re-routed per chunk
-        (retry/fallback apply only to the eager :meth:`read` path).
+        每个块都会校验并使用相同的 ``request_id`` 重新溯源。迭代期间抛出的
+        数据源错误会被包装并以请求 id 继续向上传播——它们被刻意*不*按块重试
+        或重新路由（重试/回退仅适用于立即求值的 :meth:`read` 路径）。
         """
         request_id = uuid.uuid4().hex
         try:
@@ -540,7 +534,7 @@ class DataGateway:
             raise
 
     # ------------------------------------------------------------------
-    # Realtime
+    # 实时
     # ------------------------------------------------------------------
 
     def subscribe(
@@ -550,16 +544,14 @@ class DataGateway:
         route: RouteOptions | None = None,
         control_sink: Callable[[StreamEvent], None] | None = None,
     ) -> Subscription:
-        """Subscribe to a push stream.
+        """订阅推送流。
 
-        A single per-subscription lock guards the routing decision and delivery
-        state; the user sink is invoked outside the lock.  Control events
-        (:class:`DataGapEvent` / :class:`DataSourceStateEvent`) follow
-        ``policy.gap_action``: ``raise`` raises :class:`DataGapError` with the
-        request id, ``pause`` pauses the subscription (recoverable), and
-        ``continue`` routes control events to ``control_sink`` if one is given.
-        Cancelled subscriptions no longer receive deliveries.  The returned
-        :class:`Subscription` is the thread-safe handle shared with ``cancel``.
+        每个订阅使用单把锁保护路由决策与投递状态；用户 sink 在锁外被调用。
+        控制事件（:class:`DataGapEvent`/:class:`DataSourceStateEvent`）遵循
+        ``policy.gap_action``：``raise`` 抛出带请求 id 的
+        :class:`DataGapError`，``pause`` 暂停订阅（可恢复），``continue`` 则在
+        提供了 ``control_sink`` 时把控制事件路由给它。已取消的订阅不再接收
+        投递。返回的 :class:`Subscription` 是与 ``cancel`` 共享的线程安全句柄。
         """
         request_id = uuid.uuid4().hex
         try:
@@ -604,7 +596,7 @@ class DataGateway:
                                 object.__setattr__(subscription, "state", "paused")
                                 object.__setattr__(subscription, "error", str(event))
                         return
-                    # continue -> expose control events on the control sink
+                    # continue -> 将控制事件暴露到控制 sink 上
                     if control_sink is not None:
                         control_sink(event)
                     return
@@ -628,7 +620,7 @@ class DataGateway:
             raise
 
     def poll(self, request: StreamRequest, route: RouteOptions | None = None) -> Iterator[StreamEvent]:
-        """Pull events from a polling adapter in the configured mode."""
+        """按配置的模式从轮询适配器拉取事件。"""
         request_id = uuid.uuid4().hex
         try:
             definition = self._catalog.get(request.dataset)
@@ -664,7 +656,7 @@ class DataGateway:
         from_position: Any,
         route: RouteOptions | None = None,
     ) -> Iterator[MarketEvent]:
-        """Replay market events from a stream position."""
+        """从某个流位置回放市场事件。"""
         request_id = uuid.uuid4().hex
         try:
             definition = self._catalog.get(request.dataset)
@@ -696,15 +688,15 @@ class DataGateway:
             raise
 
     # ------------------------------------------------------------------
-    # Calendar (dedicated route)
+    # 日历（专用路由）
     # ------------------------------------------------------------------
 
     def sessions(self, request: CalendarRequest, route: RouteOptions | None = None) -> CalendarBatch:
-        """Query trading-calendar sessions via the ``calendar.session`` route.
+        """经由 ``calendar.session`` 路由查询交易日历会话。
 
-        Calendar requests bypass the :class:`DataRequest` router entirely
-        (:class:`CalendarRequest` carries no ``dataset``/``fields``).  A binding
-        declaring ``calendar`` capability on ``calendar.session`` is required.
+        日历请求完全绕过 :class:`DataRequest` 路由（:class:`CalendarRequest`
+        不携带 ``dataset``/``fields``）。需要有一个在 ``calendar.session`` 上
+        声明 ``calendar`` 能力的绑定。
         """
         request_id = uuid.uuid4().hex
         opts = route if route is not None else RouteOptions()

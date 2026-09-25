@@ -1,4 +1,4 @@
-"""Trading-day context shared by provider-driven pipelines."""
+"""供数据提供方驱动管道共享的交易日上下文。"""
 
 from __future__ import annotations
 

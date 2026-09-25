@@ -1,4 +1,4 @@
-"""Pure price slippage models for in-memory execution."""
+"""用于内存撮合的纯价格滑点模型。"""
 
 from __future__ import annotations
 

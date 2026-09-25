@@ -1,4 +1,4 @@
-"""Help command for the tinyquant workbench."""
+"""tinyquant 工作台的帮助命令。"""
 
 from __future__ import annotations
 
@@ -17,9 +17,9 @@ def run_help(console: Console, topic: str | None = None) -> int:
         command = registry.resolve(topic)
         if command is None:
             suggestion = registry.suggest(topic)
-            message = f"Unknown help topic: {topic}"
+            message = f"未知的帮助主题: {topic}"
             if suggestion:
-                message += f"; did you mean: {suggestion}"
+                message += f"; 是否想输入: {suggestion}"
             render_error(console, message)
             return 2
         render_help(console, [command])

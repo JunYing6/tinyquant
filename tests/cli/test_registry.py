@@ -39,5 +39,5 @@ def test_registry_rejects_duplicate_alias() -> None:
     registry = Registry()
     registry.register(Command("help", "Run", "Show help", ["?"], None, lambda args: 0))
 
-    with pytest.raises(ValueError, match="alias"):
+    with pytest.raises(ValueError, match="别名冲突"):
         registry.register(Command("doctor", "Diagnostics", "Check runtime", ["?"], None, lambda args: 0))

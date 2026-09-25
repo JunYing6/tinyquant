@@ -1,10 +1,8 @@
-"""Port abstractions and value objects for the data-extension interface.
+"""数据扩展接口的端口抽象与值对象。
 
-Task 3 of the unified data-extension interface.  The Protocols in this module
-are the dependency-inversion boundary adapters implement against: historical,
-realtime, calendar and recovery data flows.  The frozen value objects describe
-adapter capabilities, request routing and runtime policy without coupling to a
-concrete vendor.
+统一数据扩展接口的任务 3。本模块中的 Protocols 是适配器所实现的依赖倒置边界：
+历史、实时、日历与恢复四类数据流。冻结的值对象在不耦合具体厂商的前提下，
+描述适配器能力、请求路由与运行时策略。
 """
 
 from __future__ import annotations
@@ -58,13 +56,13 @@ def _freeze(value: object) -> object:
 
 
 # ---------------------------------------------------------------------------
-# Ports
+# 端口
 # ---------------------------------------------------------------------------
 
 
 @runtime_checkable
 class HistoricalDataPort(Protocol):
-    """Random-access historical reads over a dataset."""
+    """对某数据集的随机访问历史读取。"""
 
     def read(self, request: DataRequest) -> DataBatch:
         raise NotImplementedError
@@ -75,7 +73,7 @@ class HistoricalDataPort(Protocol):
 
 @runtime_checkable
 class RealtimeDataPort(Protocol):
-    """Push/pull realtime event access."""
+    """实时事件的推送/拉取访问。"""
 
     def subscribe(self, request: StreamRequest, sink: Callable[[StreamEvent], None]) -> Subscription:
         raise NotImplementedError
@@ -86,7 +84,7 @@ class RealtimeDataPort(Protocol):
 
 @runtime_checkable
 class TradingCalendarPort(Protocol):
-    """Trading-calendar session queries."""
+    """交易日历会话查询。"""
 
     def sessions(self, request: CalendarRequest) -> CalendarBatch:
         raise NotImplementedError
@@ -94,20 +92,20 @@ class TradingCalendarPort(Protocol):
 
 @runtime_checkable
 class RecoveryPort(Protocol):
-    """Replay from a stream position to recover missed events."""
+    """从某个流位置回放以恢复遗漏的事件。"""
 
     def recover(self, request: StreamRequest, from_position: EventPosition) -> Iterator[MarketEvent]:
         raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
-# Value objects
+# 值对象
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class DatasetCapability:
-    """What one adapter can serve for one dataset."""
+    """某个适配器能为某个数据集提供什么能力。"""
 
     dataset: str
     modes: tuple[str, ...]
@@ -132,7 +130,7 @@ class DatasetCapability:
 
 @dataclass(frozen=True)
 class AdapterDescriptor:
-    """Static description of an adapter's capabilities."""
+    """适配器能力的静态描述。"""
 
     name: str
     datasets: Mapping[str, DatasetCapability]
@@ -164,7 +162,7 @@ class AdapterDescriptor:
 
 @dataclass(frozen=True)
 class DataBinding:
-    """Maps a dataset to an adapter with routing priority."""
+    """以路由优先级将数据集映射到适配器。"""
 
     dataset: str
     adapter: str
@@ -184,7 +182,7 @@ class DataBinding:
 
 @dataclass(frozen=True)
 class RouteOptions:
-    """Per-request routing/fallback instructions."""
+    """按请求的路由/回退指令。"""
 
     adapter_name: str | None = None
     allow_fallback: bool = True
@@ -193,7 +191,7 @@ class RouteOptions:
 
 @dataclass(frozen=True)
 class DataPolicy:
-    """Global runtime policy controlling validation and failure behaviour."""
+    """控制校验与失败行为的全局运行时策略。"""
 
     strict: bool = True
     fallback: bool = False
@@ -221,14 +219,14 @@ class DataPolicy:
 
 @dataclass(frozen=True)
 class Subscription:
-    """Mutable handle to an active stream subscription."""
+    """指向活跃流订阅的可变句柄。"""
 
     state: SubscriptionState = "created"
     last_position: EventPosition | None = None
     error: str | None = None
 
     def cancel(self) -> None:
-        """Idempotently cancel the subscription."""
+        """幂等地取消订阅。"""
         object.__setattr__(self, "state", "cancelled")
 
     def is_active(self) -> bool:

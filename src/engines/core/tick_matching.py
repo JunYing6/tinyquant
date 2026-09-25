@@ -1,4 +1,4 @@
-"""Provider-neutral, in-memory Tick order matching."""
+"""与数据提供方无关的内存 Tick 订单撮合。"""
 
 from __future__ import annotations
 
@@ -135,7 +135,7 @@ class TickMatchingEngine:
         return self._match_dict(tick, trade_date)
 
     def match(self, tick: Mapping[str, Any], trade_date: Any) -> list[MatchingOrder]:
-        """Temporary dict compatibility; remove in Task 8/9."""
+        """临时字典兼容接口；在任务 8/9 中移除。"""
         from trading_nodes_base.market_events import market_event_from_dict
         return self.match_event(market_event_from_dict(tick), trade_date)
 

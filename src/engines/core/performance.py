@@ -1,4 +1,4 @@
-"""In-memory backtest performance statistics."""
+"""内存回测性能统计指标。"""
 
 from __future__ import annotations
 

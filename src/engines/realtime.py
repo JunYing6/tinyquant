@@ -1,4 +1,4 @@
-"""Canonical stream-driven real-time trading engine."""
+"""规范的、由流驱动的实时交易引擎。"""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ _CONTROL_EVENTS = (DataGapEvent, DataSourceStateEvent)
 
 
 class RealTimeTradeEngine:
-    """Drive a strategy or stream from canonical realtime market events."""
+    """根据规范的实时行情事件驱动策略或策略流。"""
 
     def __init__(
         self,

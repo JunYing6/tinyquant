@@ -1,4 +1,4 @@
-"""Gateway-backed historical backtest engine without persistent state."""
+"""基于网关的历史回测引擎，不保留持久状态。"""
 
 from __future__ import annotations
 

@@ -66,7 +66,7 @@ def test_loader_rejects_non_tuple_return(monkeypatch) -> None:
     setattr(module, "build", lambda: BaseStrategy)
     monkeypatch.setitem(sys.modules, "bad_fixture", module)
 
-    with pytest.raises(FactoryContractError, match="two-item tuple"):
+    with pytest.raises(FactoryContractError, match="包含两项的元组"):
         load_backtest_factory("bad_fixture:build")
 
 
@@ -75,5 +75,5 @@ def test_loader_rejects_factory_with_optional_arguments(monkeypatch) -> None:
     setattr(module, "build", lambda mode="fast": _build_loader_fixture())
     monkeypatch.setitem(sys.modules, "parameterized_fixture", module)
 
-    with pytest.raises(FactoryContractError, match="must not declare arguments"):
+    with pytest.raises(FactoryContractError, match="不得声明参数"):
         load_backtest_factory("parameterized_fixture:build")

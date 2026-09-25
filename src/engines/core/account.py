@@ -1,4 +1,4 @@
-"""In-memory account ledger used by backtest and stream runtimes."""
+"""回测与流运行时使用的内存账户账本。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _MONEY_PRECISION = 2
 
 
 class Account:
-    """A synchronous, long-only account ledger with A-share lot sizing."""
+    """带 A 股整手（lot）手数计算的同步、仅做多的账户账本。"""
 
     def __init__(self, money: float, oc: Mapping[str, float] | None = None) -> None:
         if money <= 0:
@@ -69,7 +69,7 @@ class Account:
         return self._positions.get(code, 0)
 
     def order(self, orders: list[tuple]) -> list[tuple]:
-        """Apply order tuples of ``(date, time, code, price, amount, type)``."""
+        """应用形如 ``(date, time, code, price, amount, type)`` 的订单元组。"""
         fills: list[tuple] = []
         for order in orders:
             if len(order) < 6:

@@ -1,4 +1,4 @@
-"""Rich rendering for the tinyquant quantitative workbench."""
+"""tinyquant 量化工作台的 Rich 渲染。"""
 
 from __future__ import annotations
 
@@ -39,24 +39,24 @@ def render_welcome(console: Console, status: Mapping[str, Any]) -> None:
 
 
 def render_help(console: Console, commands: Iterable[Command]) -> None:
-    table = Table(title="tinyquant Commands", header_style="bold cyan")
-    table.add_column("Command", style="cyan")
-    table.add_column("Alias", style="bright_black")
-    table.add_column("Category", style="yellow")
-    table.add_column("Description")
+    table = Table(title="tinyquant 命令", header_style="bold cyan")
+    table.add_column("命令", style="cyan")
+    table.add_column("别名", style="bright_black")
+    table.add_column("分类", style="yellow")
+    table.add_column("描述")
     for command in sorted(commands, key=lambda item: (item.category, item.name)):
         table.add_row(command.name, ", ".join(command.aliases) or "-", command.category, command.description)
     console.print(table)
 
 
 def render_error(console: Console, message: str) -> None:
-    console.print(Panel(message, title="Error", border_style="red", title_align="left"))
+    console.print(Panel(message, title="错误", border_style="red", title_align="left"))
 
 
 def render_doctor(console: Console, rows: Mapping[str, Any]) -> None:
-    table = Table(title="Runtime Diagnostics", header_style="bold cyan")
-    table.add_column("Check", style="cyan")
-    table.add_column("Status")
+    table = Table(title="运行时诊断", header_style="bold cyan")
+    table.add_column("检查项", style="cyan")
+    table.add_column("状态")
     for name, value in rows.items():
         rendered = str(value)
         style = "positive" if rendered.lower() in {"ok", "ready", "pass", "installed"} else "warning"
@@ -70,9 +70,9 @@ def render_backtest(
     equity_curve: Iterable[Mapping[str, Any]],
     positions: Mapping[str, Any],
 ) -> None:
-    metrics = Table(title="Backtest Summary", header_style="bold cyan")
-    metrics.add_column("Metric", style="cyan")
-    metrics.add_column("Value", justify="right")
+    metrics = Table(title="回测摘要", header_style="bold cyan")
+    metrics.add_column("指标", style="cyan")
+    metrics.add_column("数值", justify="right")
     for key in ("total_return", "max_drawdown", "sharpe", "final_equity", "trading_days", "trade_count"):
         if key not in stats:
             continue
@@ -80,15 +80,15 @@ def render_backtest(
         style = "positive" if key == "total_return" and float(value) >= 0 else "negative" if key in {"total_return", "max_drawdown"} else "white"
         metrics.add_row(key, f"[{style}]{value}[/{style}]")
 
-    equity = Table(title="Recent Equity", header_style="bold cyan")
-    equity.add_column("Date", style="cyan")
-    equity.add_column("Equity", justify="right")
+    equity = Table(title="近期权益", header_style="bold cyan")
+    equity.add_column("日期", style="cyan")
+    equity.add_column("权益", justify="right")
     for row in list(equity_curve)[-5:]:
         equity.add_row(str(row.get("date", row.get("trade_date", "-"))), str(row.get("equity", "-")))
 
-    holdings = Table(title="Positions", header_style="bold cyan")
-    holdings.add_column("Code", style="cyan")
-    holdings.add_column("Volume", justify="right")
+    holdings = Table(title="持仓", header_style="bold cyan")
+    holdings.add_column("代码", style="cyan")
+    holdings.add_column("数量", justify="right")
     for code, volume in sorted(positions.items()):
         holdings.add_row(str(code), str(volume))
     console.print(Group(metrics, equity, holdings))

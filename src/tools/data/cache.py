@@ -1,10 +1,9 @@
-"""Cache contract and deterministic cache-key derivation.
+"""缓存契约与确定性缓存键派生。
 
-Task 3 of the unified data-extension interface.  :class:`DataCache` is the
-provider-neutral cache boundary; :func:`cache_key` derives a stable, content
-addressed key from the parts of a request that actually affect the served data,
-deliberately excluding ``delivery_key``/``correlation_id`` so identical
-semantic requests share one cache entry regardless of routing metadata.
+统一数据扩展接口的任务 3。:class:`DataCache` 是与厂商无关的缓存边界；
+:func:`cache_key` 从请求中实际影响所服务数据的部分派生稳定、内容寻址的键，
+刻意排除 ``delivery_key``/``correlation_id``，使语义相同的请求无论路由元数据
+如何都共享同一条缓存项。
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ __all__ = ["DataCache", "cache_key"]
 
 @runtime_checkable
 class DataCache(Protocol):
-    """Key/value store mapping deterministic request keys to cached batches."""
+    """将确定性请求键映射到缓存批次的键/值存储。"""
 
     def get(self, key: str) -> DataBatch | None:
         raise NotImplementedError
@@ -46,7 +45,7 @@ def _serialize(value: object) -> object:
 
 
 def _identity_modes_values(request: DataRequest | StreamRequest) -> dict[str, object]:
-    """Extract the request fields that determine the served data."""
+    """提取决定所服务数据的请求字段。"""
     payload: dict[str, object] = {
         "dataset": request.dataset,
         "schema_version": getattr(request, "schema_version", None),
@@ -83,7 +82,7 @@ def _identity_modes_values(request: DataRequest | StreamRequest) -> dict[str, ob
 
 
 def cache_key(request: DataRequest | StreamRequest, source_revision: str, adapter_name: str) -> str:
-    """Derive a deterministic sha256 cache key for a request."""
+    """为请求派生确定性的 sha256 缓存键。"""
     payload: dict[str, object] = {
         "dataset": request.dataset,
         "adapter_name": adapter_name,

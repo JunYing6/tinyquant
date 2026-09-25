@@ -1,4 +1,4 @@
-"""Interactive live trading wizard."""
+"""交互式实盘交易向导。"""
 
 from __future__ import annotations
 
@@ -31,12 +31,12 @@ def resolve_route(choices: dict, choice: str) -> str:
         index = int(text) - 1
         if 0 <= index < len(choices):
             return list(choices)[index]
-        raise WizardError("choice is out of range")
+        raise WizardError("编号超出范围")
     lowered = text.lower()
     for key in choices:
         if key.lower() == lowered or choices[key].lower() == lowered:
             return key
-    raise WizardError(f"no such option: {choice!r}")
+    raise WizardError(f"不存在该选项: {choice!r}")
 
 
 def _pick_route(session: PromptSession, console: Console, title: str, labels: dict) -> str:
@@ -64,7 +64,7 @@ def run_live_wizard(console: Console, state: SessionState, module_name: str | No
         kind = _ask_kind(session, console)
         items = filter_by_kind(backtests, kind)
         if not items:
-            render_error(console, f"no backtests registered for kind {kind!r}")
+            render_error(console, f"尚未注册 kind 为 {kind!r} 的回测")
             return 2
         chosen = _ask_entry(session, console, items)
         quote_route = _pick_route(session, console, "请选择行情源", QUOTE_SOURCE_LABELS)

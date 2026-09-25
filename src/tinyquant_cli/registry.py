@@ -1,4 +1,4 @@
-"""Shared command registry for one-shot and interactive tinyquant CLI use."""
+"""面向单次执行与交互式 tinyquant CLI 的共享命令注册表。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ Handler = Callable[[argparse.Namespace], int]
 
 
 class ParserError(ValueError):
-    """Raised for command-line syntax errors without terminating the process."""
+    """命令行语法错误时抛出，但不会终止进程。"""
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -38,11 +38,11 @@ class Registry:
 
     def register(self, command: Command) -> None:
         if command.name in self._commands:
-            raise ValueError(f"duplicate command: {command.name}")
+            raise ValueError(f"重复的命令: {command.name}")
         occupied = set(self._commands)
         occupied.update(alias for registered in self._commands.values() for alias in registered.aliases)
         if command.name in occupied or any(alias in occupied for alias in command.aliases):
-            raise ValueError(f"command alias conflicts: {command.aliases}")
+            raise ValueError(f"命令别名冲突: {command.aliases}")
         self._commands[command.name] = command
 
     def commands(self) -> list[Command]:
@@ -63,7 +63,7 @@ class Registry:
         return matches[0] if matches else None
 
     def build_parser(self, prog: str = "tq") -> argparse.ArgumentParser:
-        parser = _ArgumentParser(prog=prog, description="tinyquant CLI")
+        parser = _ArgumentParser(prog=prog, description="tinyquant 命令行")
         subparsers = parser.add_subparsers(
             dest="command", required=True, parser_class=_ArgumentParser
         )
@@ -86,7 +86,7 @@ class Registry:
     def dispatch(self, args: argparse.Namespace) -> int:
         command: Command = args._command
         if command.handler is None:
-            raise RuntimeError(f"command has no handler: {command.name}")
+            raise RuntimeError(f"命令没有处理器: {command.name}")
         return int(command.handler(args))
 
 

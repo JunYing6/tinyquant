@@ -1,4 +1,4 @@
-"""Session-only state for the interactive CLI."""
+"""交互式 CLI 专用的会话级状态。"""
 
 from __future__ import annotations
 

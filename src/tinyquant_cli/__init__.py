@@ -1,1 +1,1 @@
-"""Optional tinyquant command-line workbench."""
+"""可选的 tinyquant 命令行工作台。"""

@@ -1,15 +1,13 @@
-"""Immutable market data contracts and market-event value objects.
+"""不可变的市场数据契约与市场事件值对象。
 
-Task 2 of the unified data-extension interface.  These frozen dataclasses are
-the provider-neutral contract layer: request objects validated on construction
-(:class:`DataRequest`, :class:`StreamRequest`, :class:`CalendarRequest`) and
-record envelopes emitted by adapters (:class:`Bar`, :class:`TradeTick`,
-:class:`QuoteTick`, :class:`RegisteredEvent`, control events) carried in a
-:class:`DataBatch`.
+统一数据扩展接口的任务 2。这些冻结的 dataclass 是与厂商无关的契约层：
+构造时即被校验的请求对象（:class:`DataRequest`、:class:`StreamRequest`、
+:class:`CalendarRequest`），以及适配器产出的记录信封（:class:`Bar`、
+:class:`TradeTick`、:class:`QuoteTick`、:class:`RegisteredEvent`、控制事件），
+它们装载在 :class:`DataBatch` 中。
 
-All time-valued fields are timezone-aware when they carry a ``datetime``;
-mappings and sequences are deep-frozen on construction so instances stay
-immutable end to end.
+所有携带 ``datetime`` 的时间值字段都具备时区信息；映射与序列在构造时被
+深度冻结，使实例自始至终保持不可变。
 """
 
 from __future__ import annotations
@@ -33,7 +31,7 @@ _PRICE_BASES: frozenset[str] = frozenset({"raw", "adjusted_forward", "adjusted_b
 
 
 def _freeze(value: Any, seen: set[int] | None = None) -> Any:
-    """Recursively freeze mappings/sequences, raising ValueError on cycles."""
+    """递归冻结映射/序列，遇到环时抛出 ValueError。"""
     if seen is None:
         seen = set()
     value_id = id(value)
@@ -96,7 +94,7 @@ def _validate_book(levels: tuple[PriceLevel, ...], descending: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Requests
+# 请求
 # ---------------------------------------------------------------------------
 
 
@@ -229,7 +227,7 @@ class CalendarRequest:
 
 
 # ---------------------------------------------------------------------------
-# Provenance / quality
+# 溯源 / 质量
 # ---------------------------------------------------------------------------
 
 
@@ -282,7 +280,7 @@ class QualityReport:
 
 
 # ---------------------------------------------------------------------------
-# Sessions
+# 会话
 # ---------------------------------------------------------------------------
 
 
@@ -329,7 +327,7 @@ class Session:
 
 
 # ---------------------------------------------------------------------------
-# Records
+# 记录
 # ---------------------------------------------------------------------------
 
 

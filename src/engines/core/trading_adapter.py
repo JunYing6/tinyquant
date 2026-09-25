@@ -1,4 +1,4 @@
-"""Route ticks and completed bars to governed strategies."""
+"""将 tick 与已完成的 K 线分发给受治理的策略。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _strategy_bar_callback(strategy: BaseStrategy):
 
 
 class TradingContractAdapter:
-    """Keep Tick ownership in strategies while centralizing K-line aggregation."""
+    """将 Tick 所有权保留在策略中，同时集中进行 K 线聚合。"""
 
     def __init__(self, entity: Any) -> None:
         self.entity = entity

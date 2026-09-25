@@ -1,11 +1,9 @@
-"""Unified error hierarchy for the data-extension interface.
+"""数据扩展接口的统一错误层次结构。
 
-Task 3 of the unified data-extension interface.  Every error surfaced by the
-data layer is a :class:`DataError` subclass carrying structured context
-(``dataset``/``source``/``request_id``) plus a machine-readable
-:meth:`DataError.as_dict` payload.  The ``cause`` of an error is kept in-process
-only -- it is intentionally excluded from :meth:`DataError.as_dict` so errors
-stay serializable across process boundaries.
+统一数据扩展接口的任务 3。数据层抛出的每个错误都是 :class:`DataError` 的
+子类，携带结构化上下文（``dataset``/``source``/``request_id``）以及机器可读的
+:meth:`DataError.as_dict` 负载。错误的 ``cause`` 仅保留在进程内——它被刻意
+排除在 :meth:`DataError.as_dict` 之外，使错误能够在进程边界之间保持可序列化。
 """
 
 from __future__ import annotations
@@ -25,11 +23,11 @@ __all__ = [
 
 
 class DataError(RuntimeError):
-    """Base error carrying structured data-layer context.
+    """携带结构化数据层上下文的基础错误。
 
-    ``request_id`` is auto-generated (``uuid4().hex``) when not supplied so
-    every error can be traced end to end.  ``cause`` is retained as the
-    exception ``__cause__`` in-process but is not serialized by :meth:`as_dict`.
+    ``request_id`` 在未提供时自动生成（``uuid4().hex``），使每个错误都能被
+    端到端追踪。``cause`` 作为异常的 ``__cause__`` 保留在进程内，但不被
+    :meth:`as_dict` 序列化。
     """
 
     def __init__(
@@ -55,7 +53,7 @@ class DataError(RuntimeError):
             self.__cause__ = cause
 
     def as_dict(self) -> dict[str, Any]:
-        """Serialize the error, omitting the in-process-only ``cause``."""
+        """序列化错误，省略仅限进程内使用的 ``cause``。"""
         return {
             "error_type": type(self).__name__,
             "message": self.message,
@@ -68,7 +66,7 @@ class DataError(RuntimeError):
 
 
 class UnsupportedDatasetError(DataError):
-    """The requested dataset is not supported by the data layer."""
+    """所请求的数据集不被数据层支持。"""
 
     def __init__(self, message: str, **kwargs: Any) -> None:
         kwargs.pop("retryable", None)
@@ -76,7 +74,7 @@ class UnsupportedDatasetError(DataError):
 
 
 class DataContractError(DataError):
-    """The data violates a declared contract (schema / quality)."""
+    """数据违反了声明的契约（模式/质量）。"""
 
     def __init__(self, message: str, **kwargs: Any) -> None:
         kwargs.pop("retryable", None)
@@ -84,7 +82,7 @@ class DataContractError(DataError):
 
 
 class DataUnavailableError(DataError):
-    """The data source is temporarily unavailable; retry is meaningful."""
+    """数据源暂时不可用；重试是有意义的。"""
 
     def __init__(self, message: str, **kwargs: Any) -> None:
         kwargs.pop("retryable", None)
@@ -92,14 +90,14 @@ class DataUnavailableError(DataError):
 
 
 class DataSourceError(DataError):
-    """A data source raised a transport/processing error (retryable by default)."""
+    """数据源抛出了传输/处理错误（默认可重试）。"""
 
     def __init__(self, message: str, retryable: bool = True, **kwargs: Any) -> None:
         super().__init__(message, retryable=retryable, **kwargs)
 
 
 class DataGapError(DataError):
-    """A data gap was detected in a stream; retry is meaningful."""
+    """在流中检测到数据缺口；重试是有意义的。"""
 
     def __init__(self, message: str, **kwargs: Any) -> None:
         kwargs.pop("retryable", None)
@@ -107,7 +105,7 @@ class DataGapError(DataError):
 
 
 class PointInTimeError(DataError):
-    """Point-in-time semantics were violated (e.g. available_at > as_of)."""
+    """违反时点（point-in-time）语义（例如 available_at > as_of）。"""
 
     def __init__(self, message: str, **kwargs: Any) -> None:
         kwargs.pop("retryable", None)

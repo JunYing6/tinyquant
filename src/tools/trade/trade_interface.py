@@ -1,4 +1,4 @@
-"""Pure trading value objects and the abstract broker interface."""
+"""纯交易值对象与抽象券商接口。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class OrderStatus(Enum):
 
 
 class Order:
-    """A broker-neutral order value returned by an execution provider."""
+    """由执行 Provider 返回的、与券商无关的订单值对象。"""
 
     def __init__(
         self,
@@ -68,7 +68,7 @@ class Order:
 
 
 class Position:
-    """A broker-neutral position value returned by an execution provider."""
+    """由执行 Provider 返回的、与券商无关的持仓值对象。"""
 
     def __init__(
         self,
@@ -107,7 +107,7 @@ class Position:
 
 
 class AccountSnapshot:
-    """Pure broker account snapshot; it is not an in-memory account ledger."""
+    """纯券商账户快照；并非内存中的账户账本。"""
 
     def __init__(
         self,
@@ -140,7 +140,7 @@ class AccountSnapshot:
 
 
 class TradeInterface(ABC):
-    """Abstract broker interface retained for class-based adapters."""
+    """为基于类的适配器保留的抽象券商接口。"""
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config

@@ -1,4 +1,4 @@
-"""Backtest command handler."""
+"""回测命令处理器。"""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def run_backtest(
             engine.run()
         stats = engine.get_stats()
         if not stats:
-            raise RuntimeError("backtest produced no equity curve")
+            raise RuntimeError("回测未产生任何权益曲线")
         state.update_backtest(stats)
         account = engine.account
         render_backtest(console, stats, engine.equity_curve, account.positions)
@@ -71,6 +71,6 @@ def _export_excel(console: Console, engine: FastBacktestEngine, excel_dir: str |
 
         path = export_backtest_excel(engine, output_dir=excel_dir)
     except Exception as error:
-        console.print(f"[warning]Excel report skipped: {type(error).__name__}: {error}[/warning]")
+        console.print(f"[warning]Excel 报告已跳过: {type(error).__name__}: {error}[/warning]")
         return
-    console.print(f"[label]Excel report[/label] {path}")
+    console.print(f"[label]Excel 报告[/label] {path}")

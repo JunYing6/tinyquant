@@ -1,4 +1,4 @@
-"""Interactive prompt-toolkit shell backed by the shared command registry."""
+"""由共享命令注册表支撑的交互式 prompt-toolkit 外壳。"""
 
 from __future__ import annotations
 
@@ -95,8 +95,8 @@ class _Completer(Completer):
 def _toolbar(state: SessionState) -> str:
     parts = [f"Python {sys.version_info.major}.{sys.version_info.minor}", f"cwd {Path.cwd()}"]
     if state.last_final_equity is not None:
-        parts.append(f"return {state.last_total_return:.2%}")
-        parts.append(f"drawdown {state.last_max_drawdown:.2%}")
+        parts.append(f"收益率 {state.last_total_return:.2%}")
+        parts.append(f"回撤 {state.last_max_drawdown:.2%}")
     return " | ".join(parts)
 
 
@@ -117,22 +117,22 @@ def run_repl(console: Console, state: SessionState, registry: Registry) -> int:
         except KeyboardInterrupt:
             continue
         except EOFError:
-            console.print("Goodbye", style="cyan")
+            console.print("再见", style="cyan")
             return 0
         kind, tokens = classify_line(line)
         if kind == "empty":
             continue
         if kind == "exit":
-            console.print("Goodbye", style="cyan")
+            console.print("再见", style="cyan")
             return 0
         if kind == "help":
             tokens = ["help", *tokens]
         command = registry.resolve(tokens[0]) if tokens else None
         if command is None:
             suggestion = registry.suggest(tokens[0]) if tokens else None
-            message = f"Unknown command: {tokens[0] if tokens else ''}"
+            message = f"未知命令: {tokens[0] if tokens else ''}"
             if suggestion:
-                message += f"; did you mean: {suggestion}"
+                message += f"; 是否想输入: {suggestion}"
             render_error(console, message)
             continue
         try:
@@ -140,7 +140,7 @@ def run_repl(console: Console, state: SessionState, registry: Registry) -> int:
             registry.dispatch(arguments)
         except SystemExit as error:
             if error.code not in (0, None):
-                render_error(console, "Invalid command arguments")
+                render_error(console, "无效的命令参数")
         except KeyboardInterrupt:
             continue
         except Exception as error:

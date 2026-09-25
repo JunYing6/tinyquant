@@ -1,4 +1,4 @@
-"""Provider-neutral data contracts exposed by the release package."""
+"""发布包所暴露的、与厂商无关的数据契约。"""
 
 from .contracts import (
     Bar,

@@ -1,11 +1,9 @@
-"""Small in-memory gateway for tests, examples, and local CLI demos.
+"""供测试、示例与本地 CLI 演示使用的小型内存网关。
 
-Covers the market primitives (``market.bar``, ``market.trade``,
-``market.quote``), the trading calendar, and one point-in-time table dataset
-(``fundamental.indicator`` by default).  Table rows are plain mappings that are
-filtered by ``available_at <= as_of`` before being returned; rows without
-``available_at`` are only served under a non-strict policy, and then with a
-``W_PIT_MISSING`` quality warning attached to the batch.
+覆盖市场原语（``market.bar``、``market.trade``、``market.quote``）、交易
+日历，以及一个时点（point-in-time）表数据集（默认 ``fundamental.indicator``）。
+表行是普通映射，返回前会按 ``available_at <= as_of`` 过滤；无 ``available_at``
+的行仅在非严格策略下才被提供，且批次会附带 ``W_PIT_MISSING`` 质量警告。
 """
 
 from __future__ import annotations

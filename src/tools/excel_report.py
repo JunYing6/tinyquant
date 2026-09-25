@@ -1,4 +1,4 @@
-"""Export a finished :class:`FastBacktestEngine` run as an Excel report."""
+"""将已完成的 :class:`FastBacktestEngine` 运行结果导出为 Excel 报告。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from tools.excel_generator import ExcelReportGenerator, StreamExcelReportGenerat
 DEFAULT_OUTPUT_DIRNAME = "excel_reports"
 ENV_OUTPUT_DIR = "TINYQUANT_EXCEL_DIR"
 
-# engine stats keys -> (report label, percent scale)
+# engine 统计键 -> (报告标签, 百分比缩放系数)
 _STAT_LABELS: dict[str, tuple[str, float]] = {
     "trading_days": ("交易天数", 1.0),
     "total_return": ("总收益率 (%)", 100.0),
@@ -27,7 +27,7 @@ _STAT_LABELS: dict[str, tuple[str, float]] = {
 
 
 def default_output_dir() -> Path:
-    """Excel report output folder: ``$TINYQUANT_EXCEL_DIR`` or ``<cwd>/excel_reports``."""
+    """Excel 报告输出文件夹：``$TINYQUANT_EXCEL_DIR`` 或 ``<cwd>/excel_reports``。"""
     override = os.environ.get(ENV_OUTPUT_DIR)
     return Path(override) if override else Path.cwd() / DEFAULT_OUTPUT_DIRNAME
 
@@ -45,16 +45,16 @@ def export_backtest_excel(
     output_dir: str | Path | None = None,
     strategy_name: str | None = None,
 ) -> Path:
-    """Write the engine's finished backtest as an Excel workbook.
+    """将 engine 已完成的回测写入 Excel 工作簿。
 
     Args:
-        engine: a run instance of ``FastBacktestEngine`` (equity curve populated).
-        output_dir: target folder; defaults to :func:`default_output_dir`.
-        strategy_name: file/report name override; defaults to the entity's
-            ``strategy_name`` attribute or its class name.
+        engine: 一个 ``FastBacktestEngine`` 运行实例（含填充好的权益曲线）。
+        output_dir: 目标文件夹；默认使用 :func:`default_output_dir`。
+        strategy_name: 文件/报告名称覆盖；默认为实体的 ``strategy_name``
+            属性或类名。
 
     Returns:
-        The written report path.
+        生成的报告路径。
     """
     name = (
         strategy_name

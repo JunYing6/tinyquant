@@ -23,7 +23,7 @@ def test_doctor_reports_core_runtime_status() -> None:
 
     output = console.export_text()
     assert "Python" in output
-    assert "core imports" in output
+    assert "核心导入" in output
 
 
 def test_backtest_factory_failure_returns_nonzero_and_renders_error() -> None:
@@ -97,4 +97,4 @@ def test_run_backtest_success_with_progress(monkeypatch) -> None:
     code = run_backtest(console, state, "cli_fixture:build", "20240102", "20240103", 100000, "fast", write_excel=False)
 
     assert code == 0
-    assert "Backtest" in console.export_text()
+    assert "回测摘要" in console.export_text()

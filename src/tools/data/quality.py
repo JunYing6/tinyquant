@@ -1,11 +1,10 @@
-"""Pure validation functions over batches, events and point-in-time semantics.
+"""针对批次、事件及时点（point-in-time）语义的纯校验函数。
 
-Task 3 of the unified data-extension interface.  These functions are pure --
-they never raise for *quality* findings unless ``strict`` is set, in which case
-severe problems raise :class:`DataContractError` (or :class:`PointInTimeError`
-for point-in-time violations).  Rejected rows are never silently dropped: each
-is counted in :attr:`QualityReport.rejected_count` (deduplicated by record
-index) and tagged with a stable warning code.
+统一数据扩展接口的任务 3。这些函数是纯函数——除非设置了 ``strict``，否则它们
+绝不会为*质量*发现而抛出异常；在 ``strict`` 下，严重问题会抛出
+:class:`DataContractError`（时点违规则抛 :class:`PointInTimeError`）。被拒行的
+行永远不会被静默丢弃：每行都计入 :attr:`QualityReport.rejected_count`
+（按记录索引去重）并打上稳定的警告码。
 """
 
 from __future__ import annotations
@@ -51,7 +50,7 @@ _WARNING_CODES = {
 
 
 # ---------------------------------------------------------------------------
-# Field extraction helpers
+# 字段提取辅助
 # ---------------------------------------------------------------------------
 
 
@@ -96,7 +95,7 @@ def _pk_value(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Per-record checks
+# 逐记录检查
 # ---------------------------------------------------------------------------
 
 
@@ -268,12 +267,12 @@ def _downgrade(
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# 公共 API
 # ---------------------------------------------------------------------------
 
 
 def validate_request(request: DataRequest, definition: Any) -> None:
-    """Validate that a request targets a known dataset with known fields."""
+    """校验请求针对的是已知数据集且字段已知。"""
     if request.dataset != definition.name:
         raise UnsupportedDatasetError(
             f"dataset {request.dataset!r} is not described by definition {definition.name!r}",
@@ -303,7 +302,7 @@ def validate_batch(
     timezone: str | None = None,
     as_of: datetime | None = None,
 ) -> QualityReport:
-    """Validate every record in a batch, returning a quality report."""
+    """校验批次中的每条记录，返回质量报告。"""
     accum: dict[str, tuple[str, set[str]]] = {}
     rejected: set[int] = set()
     checked = 0
@@ -337,7 +336,7 @@ def validate_batch(
 
 
 def validate_event(event: Any, definition: Any, strict: bool = True, session: Any = None, timezone: str | None = None) -> QualityReport:
-    """Validate a single event record against a dataset definition."""
+    """针对数据集定义校验单条事件记录。"""
     accum: dict[str, tuple[str, set[str]]] = {}
     rejected: set[int] = set()
     problems: set[str] = set()
@@ -356,7 +355,7 @@ def validate_event(event: Any, definition: Any, strict: bool = True, session: An
 
 
 def validate_point_in_time(records: Sequence[Any], as_of: datetime) -> None:
-    """Raise :class:`PointInTimeError` if any record's ``available_at`` is after ``as_of``."""
+    """若任一条记录的 ``available_at`` 晚于 ``as_of``，则抛出 :class:`PointInTimeError`。"""
     for record in records:
         available_at = _get_field(record, "available_at")
         if isinstance(available_at, datetime) and as_of is not None and available_at > as_of:

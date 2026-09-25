@@ -1,17 +1,16 @@
-"""Provider-neutral dataset catalog and field definitions.
+"""与厂商无关的数据集目录与字段定义。
 
-A :class:`DatasetDefinition` describes what one logical dataset looks like --
-its fields, units, primary key, ordering, time semantics and point-in-time
-requirements.  :func:`default_catalog` registers the 37 first-release datasets
-and freezes them so a run observes one consistent set of contracts.
+一个 :class:`DatasetDefinition` 描述一个逻辑数据集的样子——它的字段、单位、
+主键、排序、时间语义与时点（point-in-time）要求。:func:`default_catalog`
+注册 37 个首发数据集并冻结它们，使一次运行观察到一致的一组契约。
 
-Field units follow these conventions:
-  * ``currency``     -- money in the asset base unit (yuan for A-shares)
-  * ``quantity``     -- shares / units in the base unit
-  * ``percentage_points`` -- e.g. ``5.2`` means ``5.2%``
-  * ``price``        -- price in the asset base unit
-  * old vendor names (``ts_code``/``code``/``stock_code``/``pr``/``vol``/
-    ``amount``) are kept only as ``aliases``, never as canonical field names.
+字段单位遵循以下约定：
+  * ``currency``         —— 以资产基础单位计的货币（A 股为元）
+  * ``quantity``         —— 以基础单位计的股份数/数量
+  * ``percentage_points``—— 例如 ``5.2`` 表示 ``5.2%``
+  * ``price``            —— 以资产基础单位计的价格
+  * 旧厂商名称（``ts_code``/``code``/``stock_code``/``pr``/``vol``/
+    ``amount``）仅保留为 ``aliases``，绝不作为规范字段名。
 """
 
 from __future__ import annotations
@@ -25,8 +24,8 @@ DatasetStatus = Literal[
     "available", "contract_only", "provisional", "derived", "internal"
 ]
 
-# Query-parameter dimensions that may appear in ``filters`` without being
-# dataset fields themselves (request controls, not record columns).
+# 可能出现在 ``filters`` 中的查询参数维度，但这些维度本身不是数据集字段
+# （属于请求控制项，而非记录列）。
 _QUERY_DIMS = frozenset(
     {
         "start", "end", "as_of", "anchor", "fields", "codes", "event_types",
@@ -34,8 +33,7 @@ _QUERY_DIMS = frozenset(
     }
 )
 
-# Cross-domain time dimensions allowed in ``filters`` regardless of whether a
-# particular dataset emits them as columns.
+# ``filters`` 中允许的跨领域时间维度，无论某个数据集是否将它们作为列输出。
 _CROSS_TIME_FILTERS = frozenset(
     {
         "effective_time", "event_time", "trading_date", "available_at",
@@ -46,7 +44,7 @@ _CROSS_TIME_FILTERS = frozenset(
 
 
 def _freeze(value: Any) -> Any:
-    """Recursively freeze mappings and sequences into read-only structures."""
+    """递归地将映射与序列冻结为只读结构。"""
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
@@ -58,7 +56,7 @@ def _freeze(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class FieldDefinition:
-    """Definition of one field in a dataset."""
+    """数据集中某个字段的定义。"""
 
     name: str
     python_type: type | tuple[type, ...]
@@ -79,7 +77,7 @@ class FieldDefinition:
 
 @dataclass(frozen=True)
 class DatasetDefinition:
-    """What one dataset looks like."""
+    """一个数据集的样子。"""
 
     name: str
     schema_version: str
@@ -135,7 +133,7 @@ class DatasetDefinition:
 
 
 class DataCatalog:
-    """Registry of dataset definitions, frozen after construction."""
+    """数据集定义的注册表，构造完成后即被冻结。"""
 
     def __init__(self) -> None:
         self._definitions: dict[str, DatasetDefinition] = {}
@@ -194,7 +192,7 @@ class DataCatalog:
             for target in definition.composition:
                 if target not in names:
                     raise ValueError(f"{name}: composition member {target!r} is not registered")
-        # cycle / self-reference detection via DFS over view_of and composition
+        # 通过 DFS 对 view_of 和 composition 做环 / 自引用检测
         visiting: set[str] = set()
         done: set[str] = set()
 
@@ -216,7 +214,7 @@ class DataCatalog:
 
 
 def default_catalog() -> DataCatalog:
-    """Return a fresh, frozen catalog containing the release manifest."""
+    """返回一个包含发布清单的全新、已冻结的目录。"""
     return DataCatalog.default()
 
 
@@ -240,7 +238,7 @@ def _field(
 
 
 # ---------------------------------------------------------------------------
-# Canonical field registry
+# 规范字段注册表
 # ---------------------------------------------------------------------------
 
 _FIELDS: dict[str, FieldDefinition] = {}
@@ -278,7 +276,7 @@ def _combine(*groups: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(result)
 
 
-# cross-domain identifiers
+# 跨领域标识符
 _add_fields(
     (
         "instrument_id", "asset_type", "source", "quality", "market", "timezone",

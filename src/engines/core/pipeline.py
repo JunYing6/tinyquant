@@ -1,4 +1,4 @@
-"""Gateway-backed daily and intraday strategy data pipeline."""
+"""基于网关的日线与日内策略数据管道。"""
 
 from __future__ import annotations
 

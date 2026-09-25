@@ -29,17 +29,17 @@ def load_backtests(module_name: str | None = None) -> list[dict]:
     try:
         module = importlib.import_module(name)
     except Exception as error:
-        raise WizardError(f"cannot load backtest registry {name!r}: {error}") from error
+        raise WizardError(f"无法加载回测注册表 {name!r}: {error}") from error
     backtests = getattr(module, "BACKTESTS", None)
     if not isinstance(backtests, list) or not backtests:
-        raise WizardError(f"{name!r} does not define a non-empty BACKTESTS list")
+        raise WizardError(f"{name!r} 未定义非空的 BACKTESTS 列表")
     for index, entry in enumerate(backtests):
         if not isinstance(entry, dict) or not all(key in entry for key in ("name", "kind", "factory")):
-            raise WizardError(f"BACKTESTS[{index}] must have name/kind/factory")
+            raise WizardError(f"BACKTESTS[{index}] 必须包含 name/kind/factory")
         if entry["kind"] not in ("strategy", "stream"):
-            raise WizardError(f"BACKTESTS[{index}] kind must be 'strategy' or 'stream'")
+            raise WizardError(f"BACKTESTS[{index}] 的 kind 必须是 'strategy' 或 'stream'")
         if not isinstance(entry["factory"], str) or ":" not in entry["factory"]:
-            raise WizardError(f"BACKTESTS[{index}] factory must be 'module:function'")
+            raise WizardError(f"BACKTESTS[{index}] 的 factory 必须是 'module:function'")
     return backtests
 
 
@@ -53,12 +53,12 @@ def resolve_choice(items: list[dict], choice: str) -> dict:
         index = int(text) - 1
         if 0 <= index < len(items):
             return items[index]
-        raise WizardError("choice is out of range")
+        raise WizardError("编号超出范围")
     lowered = text.lower()
     for entry in items:
         if entry["name"].lower() == lowered:
             return entry
-    raise WizardError(f"no backtest named {choice!r}")
+    raise WizardError(f"不存在名为 {choice!r} 的回测")
 
 
 def parse_date(value: str) -> str:
@@ -66,28 +66,28 @@ def parse_date(value: str) -> str:
     try:
         return datetime.strptime(text, "%Y%m%d").strftime("%Y%m%d")
     except ValueError as error:
-        raise WizardError(f"date must be YYYYMMDD, got {value!r}") from error
+        raise WizardError(f"日期格式必须为 YYYYMMDD，得到 {value!r}") from error
 
 
 def validate_window(start: str, end: str) -> None:
     if start > end:
-        raise WizardError(f"start date {start} must not be after end date {end}")
+        raise WizardError(f"开始日期 {start} 不能晚于结束日期 {end}")
 
 
 def parse_capital(value: str) -> float:
     try:
         capital = float(value.strip())
     except ValueError as error:
-        raise WizardError(f"initial capital must be a number, got {value!r}") from error
+        raise WizardError(f"初始资金必须是数字，得到 {value!r}") from error
     if capital <= 0:
-        raise WizardError("initial capital must be positive")
+        raise WizardError("初始资金必须为正数")
     return capital
 
 
 def parse_mode(value: str) -> str:
     mode = value.strip().lower()
     if mode not in _VALID_MODES:
-        raise WizardError(f"mode must be one of {sorted(_VALID_MODES)}")
+        raise WizardError(f"运行模式必须是 {sorted(_VALID_MODES)} 之一")
     return mode
 
 
@@ -144,14 +144,14 @@ def run_backtest_wizard(console: Console, state: SessionState, module_name: str 
     try:
         import prompt_toolkit  # noqa: F401
     except ImportError:
-        render_error(console, "wizard requires prompt_toolkit; pip install tinyquant[cli]")
+        render_error(console, "向导需要 prompt_toolkit；请执行 pip install tinyquant[cli]")
         return 2
     session = PromptSession()
     try:
         kind = _ask_kind(session, console)
         items = filter_by_kind(backtests, kind)
         if not items:
-            render_error(console, f"no backtests registered for kind {kind!r}")
+            render_error(console, f"尚未注册 kind 为 {kind!r} 的回测")
             return 2
         chosen = _ask_entry(session, console, items)
         start = _ask(session, console, "开始日期", "20240101", parse_date)

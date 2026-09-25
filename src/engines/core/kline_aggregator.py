@@ -1,4 +1,4 @@
-"""In-memory aggregation of ticks and completed daily bars."""
+"""在内存中聚合 tick 与已完成的日线 K 线。"""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ class _Buffer:
 
 
 class KlineAggregator:
-    """Aggregate A-share session ticks into a declared K-line frequency."""
+    """将 A 股会话 tick 聚合到声明的 K 线频率。"""
 
     def __init__(self, frequency: str, on_bar: Callable[[KlineBar], None]) -> None:
         self.frequency = normalize_frequency(frequency)
@@ -74,7 +74,7 @@ class KlineAggregator:
         self._feed_parsed(code, minute, second, trade_date, price, volume, amount)
 
     def feed_tick(self, tick: Mapping[str, Any]) -> None:
-        """Temporary dict compatibility for fast/realtime; remove in Task 8/9."""
+        """临时字典兼容接口，用于 fast/realtime；在任务 8/9 中移除。"""
         from trading_nodes_base.market_events import market_event_from_dict
         event = market_event_from_dict(tick)
         if not isinstance(event, TradeTick):

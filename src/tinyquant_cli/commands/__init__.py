@@ -1,4 +1,4 @@
-"""tinyquant CLI command definitions and handlers."""
+"""tinyquant CLI 命令定义与处理器。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from tinyquant_cli.runtime import SessionState
 
 
 def _configure_help(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("topic", nargs="?", help="optional command name")
+    parser.add_argument("topic", nargs="?", help="可选的命令名")
 
 
 def _help_handler(console: Console, state: SessionState):
@@ -25,7 +25,7 @@ def _help_handler(console: Console, state: SessionState):
 
 
 def _configure_doctor(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--factory", help="optional module:function to validate")
+    parser.add_argument("--factory", help="可选的要校验的 module:function")
 
 
 def _doctor_handler(console: Console, state: SessionState):
@@ -55,10 +55,10 @@ def _live_handler(console: Console, state: SessionState):
 
 def build_registry(console: Console, state: SessionState) -> Registry:
     registry = Registry()
-    registry.register(Command("help", "Run", "Show command help", ["?"], _configure_help, _help_handler(console, state)))
+    registry.register(Command("help", "Run", "显示命令帮助", ["?"], _configure_help, _help_handler(console, state)))
     registry.register(Command("backtest", "Run", "交互式回测向导", ["bt"], None, _backtest_handler(console, state)))
     registry.register(Command("live", "Run", "交互式实盘交易", [], None, _live_handler(console, state)))
-    registry.register(Command("doctor", "Diagnostics", "Check the local runtime", ["diag"], _configure_doctor, _doctor_handler(console, state)))
+    registry.register(Command("doctor", "Diagnostics", "检查本地运行时", ["diag"], _configure_doctor, _doctor_handler(console, state)))
     return registry
 
 

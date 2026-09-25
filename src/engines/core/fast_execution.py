@@ -1,4 +1,4 @@
-"""Next-source-bar execution for fast backtests."""
+"""在下一个来源 K 线上执行，用于快速回测。"""
 
 from __future__ import annotations
 

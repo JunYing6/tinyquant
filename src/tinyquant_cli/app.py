@@ -27,7 +27,7 @@ def _cli_dependencies_available() -> bool:
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not _cli_dependencies_available():
-        print('tinyquant CLI requires: pip install "tinyquant[cli]"', file=sys.stderr)
+        print('tinyquant CLI 需要: pip install "tinyquant[cli]"', file=sys.stderr)
         return 2
 
     from rich.console import Console
@@ -45,15 +45,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     command = registry.resolve(args[0])
     if command is None:
         suggestion = registry.suggest(args[0])
-        message = f"unknown command: {args[0]}"
+        message = f"未知命令: {args[0]}"
         if suggestion:
-            message += f"; did you mean: {suggestion}"
+            message += f"; 是否想输入: {suggestion}"
         print(message, file=sys.stderr)
         return 2
     try:
         return registry.dispatch(registry.build_parser("tq").parse_args(args))
     except ParserError as error:
-        print(f"Invalid command arguments: {error}", file=sys.stderr)
+        print(f"无效的命令参数: {error}", file=sys.stderr)
         return 2
     except SystemExit as error:
         return int(error.code) if isinstance(error.code, int) else 2

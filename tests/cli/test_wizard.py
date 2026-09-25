@@ -36,7 +36,7 @@ def test_load_backtests_returns_validated_list(monkeypatch) -> None:
 def test_load_backtests_missing_module(monkeypatch) -> None:
     monkeypatch.delitem(sys.modules, "no_such_registry", raising=False)
 
-    with pytest.raises(WizardError, match="cannot load"):
+    with pytest.raises(WizardError, match="无法加载回测注册表"):
         load_backtests("no_such_registry")
 
 

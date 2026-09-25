@@ -1,4 +1,4 @@
-"""Pure in-memory execution utilities used by tinyquant engines."""
+"""tinyquant 引擎使用的纯内存执行工具。"""
 
 from engines.core.account import Account
 from engines.core.fast_execution import FastExecutionAdapter

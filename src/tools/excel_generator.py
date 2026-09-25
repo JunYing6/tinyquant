@@ -1,7 +1,7 @@
-"""Excel backtest report generator.
+"""Excel 回测报告生成器。
 
-Output layout: one multi-sheet workbook holding the strategy overview,
-equity curve, trade log, daily positions and monthly returns.
+输出布局：一个包含策略概览、权益曲线、交易记录、每日持仓与月度收益的
+多工作表工作簿。
 """
 
 from __future__ import annotations
@@ -20,18 +20,17 @@ TradeRecord = tuple[str, Any, str, float, int]
 
 
 class ExcelReportGenerator:
-    """Render backtest records as a styled multi-sheet Excel workbook.
+    """将回测记录渲染为带样式的多工作表 Excel 工作簿。
 
     Args:
-        equity_curve: daily equity rows (``date``, ``equity``, ``balance``, ...).
-        daily_positions: per-day holdings rows (``date``, ``positions``,
-            ``close_prices``).
-        trade_log: trades grouped by date: ``{date: [(time, code, price, qty)]}``.
-        stats_dict: performance metrics keyed by the report's Chinese labels.
-        strategy_name: strategy name shown in the overview sheet.
-        start_date: backtest start date (YYYYMMDD).
-        end_date: backtest end date (YYYYMMDD).
-        initial_capital: starting capital of the backtest.
+        equity_curve: 每日权益行（``date``、``equity``、``balance``、...）。
+        daily_positions: 每日持仓行（``date``、``positions``、``close_prices``）。
+        trade_log: 按日期分组的交易：``{date: [(time, code, price, qty)]}``。
+        stats_dict: 以报告的简体中文标签为键的绩效指标。
+        strategy_name: 显示在概览表中的策略名称。
+        start_date: 回测开始日期（YYYYMMDD）。
+        end_date: 回测结束日期（YYYYMMDD）。
+        initial_capital: 回测的初始资金。
     """
 
     HEADER_FONT = Font(name='微软雅黑', bold=True, color='FFFFFF')
@@ -68,7 +67,7 @@ class ExcelReportGenerator:
         self.member_count = 0
 
     def generate(self, save_path: str) -> str:
-        """Write the workbook to ``save_path`` and return the path."""
+        """将工作簿写入 ``save_path`` 并返回路径。"""
         os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
 
         wb = Workbook()

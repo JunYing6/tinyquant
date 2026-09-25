@@ -13,18 +13,18 @@ def test_one_shot_help_uses_registered_handler(capsys) -> None:
 
 def test_one_shot_unknown_command_returns_nonzero(capsys) -> None:
     assert app.main(["nosuchcmd"]) == 2
-    assert "unknown command" in capsys.readouterr().err
+    assert "未知命令" in capsys.readouterr().err
 
 
 def test_one_shot_invalid_arguments_returns_nonzero(capsys) -> None:
     assert app.main(["backtest", "run", "mymod:build"]) == 2
 
-    assert "Invalid command arguments" in capsys.readouterr().err
+    assert "无效的命令参数" in capsys.readouterr().err
 
 
 def test_backtest_command_enters_wizard_aborts_without_stdin(capsys) -> None:
     assert app.main(["backtest"]) == 2
-    assert "backtest" in capsys.readouterr().out.lower()
+    assert "回测" in capsys.readouterr().out
 
 
 def test_cli_runtime_root_takes_import_precedence(monkeypatch, tmp_path) -> None:

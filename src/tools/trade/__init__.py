@@ -1,4 +1,4 @@
-"""Trading contracts and provider protocols."""
+"""交易契约与 Provider 协议。"""
 
 from tools.trade.providers import TradeExecutor
 from tools.trade.trade_interface import (
