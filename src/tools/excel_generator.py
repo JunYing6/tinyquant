@@ -220,12 +220,8 @@ class ExcelReportGenerator:
         chart.x_axis.title = "日期"
         chart.y_axis.title = "权益"
 
-        # 仅移除 y 轴网格线（黑色条纹），其余坐标轴保持默认
+        # 仅移除 y 轴网格线（黑色条纹），其余坐标轴/格式保持 openpyxl 默认
         chart.y_axis.majorGridlines = None
-
-        # 坐标轴数值/日期格式
-        chart.y_axis.numFmt = "#,##0"
-        chart.x_axis.numFmt = "yyyy-mm-dd"
 
         data = Reference(ws, min_col=2, min_row=1, max_row=data_rows)
         bench = Reference(ws, min_col=9, min_row=1, max_row=data_rows)
