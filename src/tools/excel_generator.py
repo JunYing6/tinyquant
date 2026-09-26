@@ -213,15 +213,11 @@ class ExcelReportGenerator:
     def _add_equity_chart(self, ws: Worksheet, data_rows: int, start_row: int) -> None:
         chart = LineChart()
         chart.title = "权益曲线"
+        chart.y_axis.title = "权益"
+        chart.x_axis.title = "日期"
+        chart.style = 10
         chart.width = 30
         chart.height = 15
-
-        # 坐标轴标题：采用 openpyxl 默认轴布局，由 Excel 自动摆放
-        chart.x_axis.title = "日期"
-        chart.y_axis.title = "权益"
-
-        # 仅移除 y 轴网格线（黑色条纹），其余坐标轴/格式保持 openpyxl 默认
-        chart.y_axis.majorGridlines = None
 
         data = Reference(ws, min_col=2, min_row=1, max_row=data_rows)
         bench = Reference(ws, min_col=9, min_row=1, max_row=data_rows)
@@ -243,7 +239,7 @@ class ExcelReportGenerator:
         bench_series.graphicalProperties.line.solidFill = "808080"
         bench_series.graphicalProperties.line.width = 12000
 
-        ws.add_chart(chart, "K2")
+        ws.add_chart(chart, f"A{start_row + 2}")
 
     def _create_trades_sheet(self, wb: Workbook) -> None:
         ws = wb.create_sheet('交易记录')
