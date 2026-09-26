@@ -220,6 +220,9 @@ class ExcelReportGenerator:
         chart.x_axis.title = "日期"
         chart.y_axis.title = "权益"
 
+        # 仅移除 y 轴网格线（黑色条纹），其余坐标轴保持默认
+        chart.y_axis.majorGridlines = None
+
         # 坐标轴数值/日期格式
         chart.y_axis.numFmt = "#,##0"
         chart.x_axis.numFmt = "yyyy-mm-dd"
@@ -230,12 +233,6 @@ class ExcelReportGenerator:
         chart.add_data(data, titles_from_data=True)
         chart.add_data(bench, titles_from_data=True)
         chart.set_categories(cats)
-
-        # 按总回测天数稀疏化 x 轴日期标签（数据点仍全部绘制，仅标注稀疏）
-        num_categories = data_rows - 1
-        skip = 1 if num_categories <= 20 else max(3, num_categories // 12)
-        chart.x_axis.tickLblSkip = skip
-        chart.x_axis.tickMarkSkip = skip
 
         equity_series = chart.series[0]
         equity_series.smooth = True
