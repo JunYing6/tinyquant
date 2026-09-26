@@ -213,27 +213,14 @@ class ExcelReportGenerator:
     def _add_equity_chart(self, ws: Worksheet, data_rows: int, start_row: int) -> None:
         chart = LineChart()
         chart.title = "权益曲线"
-        chart.style = 2
         chart.width = 30
         chart.height = 15
 
-        # 显式显示两条坐标轴及刻度标签，避免缺失坐标轴
-        chart.x_axis.delete = False
-        chart.y_axis.delete = False
-                # 不设置坐标轴标题（图表标题已是“权益曲线”，日期/金额刻度自明），
-        # 避免 openpyxl 无法控制轴标题位置导致与刻度文字错位
-        chart.x_axis.axPos = "b"
-        chart.y_axis.axPos = "l"
-        chart.x_axis.tickLblPos = "nextTo"
-        chart.y_axis.tickLblPos = "nextTo"
-        chart.x_axis.majorTickMark = "out"
-        chart.y_axis.majorTickMark = "out"
+        # 坐标轴标题：采用 openpyxl 默认轴布局，由 Excel 自动摆放
+        chart.x_axis.title = "日期"
+        chart.y_axis.title = "权益"
 
-        # 去掉深色网格线（黑条纹），保留干净的图表背景
-        chart.x_axis.majorGridlines = None
-        chart.y_axis.majorGridlines = None
-
-        # 坐标轴数值/日期格式：y 轴用紧凑千分位，避免数值与标题重叠
+        # 坐标轴数值/日期格式
         chart.y_axis.numFmt = "#,##0"
         chart.x_axis.numFmt = "yyyy-mm-dd"
 
