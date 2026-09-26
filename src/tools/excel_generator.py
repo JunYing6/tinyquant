@@ -221,7 +221,7 @@ class ExcelReportGenerator:
         chart.x_axis.delete = False
         chart.y_axis.delete = False
         chart.x_axis.title = "日期"
-        chart.y_axis.title = "权益"
+        # 不设置 y 轴标题（图表标题已是“权益曲线”），避免它与左侧金额刻度重叠
         chart.x_axis.tickLblPos = "nextTo"
         chart.y_axis.tickLblPos = "nextTo"
         chart.x_axis.majorTickMark = "out"
@@ -231,8 +231,8 @@ class ExcelReportGenerator:
         chart.x_axis.majorGridlines = None
         chart.y_axis.majorGridlines = None
 
-        # 坐标轴数值/日期格式
-        chart.y_axis.numFmt = "0"
+        # 坐标轴数值/日期格式：y 轴用紧凑千分位，避免数值与标题重叠
+        chart.y_axis.numFmt = "#,##0"
         chart.x_axis.numFmt = "yyyy-mm-dd"
 
         data = Reference(ws, min_col=2, min_row=1, max_row=data_rows)
@@ -241,6 +241,12 @@ class ExcelReportGenerator:
         chart.add_data(data, titles_from_data=True)
         chart.add_data(bench, titles_from_data=True)
         chart.set_categories(cats)
+
+        # 按总回测天数稀疏化 x 轴日期标签（数据点仍全部绘制，仅标注稀疏）
+        num_categories = data_rows - 1
+        skip = 1 if num_categories <= 20 else max(3, num_categories // 12)
+        chart.x_axis.tickLblSkip = skip
+        chart.x_axis.tickMarkSkip = skip
 
         equity_series = chart.series[0]
         equity_series.smooth = True
