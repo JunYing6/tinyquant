@@ -222,6 +222,8 @@ class ExcelReportGenerator:
         chart.y_axis.delete = False
         chart.x_axis.title = "日期"
         # 不设置 y 轴标题（图表标题已是“权益曲线”），避免它与左侧金额刻度重叠
+        chart.x_axis.axPos = "b"
+        chart.y_axis.axPos = "l"
         chart.x_axis.tickLblPos = "nextTo"
         chart.y_axis.tickLblPos = "nextTo"
         chart.x_axis.majorTickMark = "out"
