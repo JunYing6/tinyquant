@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 from openpyxl import Workbook
-from openpyxl.chart import LineChart, Reference
+from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -387,9 +387,8 @@ class ExcelReportGenerator:
         self._set_col_widths(ws, {c: 18 for c in 'ABC'})
 
     def _add_monthly_chart(self, ws: Worksheet, month_count: int) -> None:
-        chart = LineChart()
+        chart = BarChart()
         chart.title = "月度收益率"
-        chart.y_axis.title = "收益率 (%)"
         chart.style = 10
         chart.width = 25
         chart.height = 12
@@ -398,6 +397,20 @@ class ExcelReportGenerator:
         cats = Reference(ws, min_col=1, min_row=2, max_row=month_count + 1)
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(cats)
+
+        # 显式显示坐标轴刻度标签，并去掉深色网格线
+        chart.x_axis.delete = False
+        chart.y_axis.delete = False
+        chart.x_axis.majorGridlines = None
+        chart.y_axis.majorGridlines = None
+
+        # 收益率坐标轴同时显示正负，并使零轴固定在图表垂直中间（关于 0 对称）
+        ret_values = [ws.cell(row=r, column=2).value for r in range(2, month_count + 2)]
+        finite = [float(v) for v in ret_values if isinstance(v, (int, float))]
+        max_abs = max((abs(v) for v in finite), default=1.0)
+        bound = max(max_abs * 1.2, 1.0)
+        chart.y_axis.scaling.min = -bound
+        chart.y_axis.scaling.max = bound
 
         ws.add_chart(chart, f"A{month_count + 4}")
 
