@@ -220,8 +220,8 @@ class ExcelReportGenerator:
         # 显式显示两条坐标轴及刻度标签，避免缺失坐标轴
         chart.x_axis.delete = False
         chart.y_axis.delete = False
-        chart.x_axis.title = "日期"
-        # 不设置 y 轴标题（图表标题已是“权益曲线”），避免它与左侧金额刻度重叠
+                # 不设置坐标轴标题（图表标题已是“权益曲线”，日期/金额刻度自明），
+        # 避免 openpyxl 无法控制轴标题位置导致与刻度文字错位
         chart.x_axis.axPos = "b"
         chart.y_axis.axPos = "l"
         chart.x_axis.tickLblPos = "nextTo"
