@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Protocol, Set
 from collections.abc import Sequence
 
 import pandas as pd  # type: ignore[import-untyped]
@@ -42,24 +42,118 @@ class RiskLayerResult:
     reason: str = ""
 
 
-class StrategyContext:
-    def __init__(self) -> None:
-        self._data: Dict[str, Any] = {}
+class StateStorage(Protocol):
+    """Injected persistence backend shared by the TradingContext.
+
+    Live trading (strategy or stream) may not run around the clock; the shared
+    context persists its namespaced node state through this provider-neutral
+    backend (file, DB, redis, ...) so it can resume the next session.
+    """
+
+    def save(self, state: Dict[str, Any]) -> None: ...
+
+    def load(self) -> Dict[str, Any]: ...
+
+
+class ContextSegment:
+    """A per-node read/write slice of the shared TradingContext."""
+
+    __slots__ = ("_context", "_name", "_data")
+
+    def __init__(self, context: "TradingContext", name: str, data: Dict[str, Any]) -> None:
+        self._context = context
+        self._name = name
+        self._data = data
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
         self._data[key] = value
+        self._context._mark_dirty(self._name)
 
     def has(self, key: str) -> bool:
         return key in self._data
 
     def clear(self) -> None:
         self._data.clear()
+        self._context._mark_dirty(self._name)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dict(self._data)
+
+
+class TradingContext:
+    """Shared, persistable state across every trading node.
+
+    One instance is created per live process (single strategy or stream) and
+    injected into every component/factor via ``set_context``, so each node
+    reads and writes its own persistent state under a namespace.  The whole
+    context is backed by one injected :class:`StateStorage` and saved/restored
+    once per session.
+    """
+
+    def __init__(self, storage: Optional[StateStorage] = None) -> None:
+        self._storage = storage
+        self._segments: Dict[str, Dict[str, Any]] = {}
+        self._dirty: set[str] = set()
+        self.restore()
+
+    def node(self, name: str) -> ContextSegment:
+        return ContextSegment(self, name, self._segments.setdefault(name, {}))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._segments.get("_root", {}).get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._segments.setdefault("_root", {})[key] = value
+        self._mark_dirty("_root")
+
+    def has(self, key: str) -> bool:
+        return key in self._segments.get("_root", {})
+
+    def clear(self) -> None:
+        self._segments.clear()
+        self._dirty.clear()
+
+    def _mark_dirty(self, name: str) -> None:
+        self._dirty.add(name)
+
+    def _nodes(self) -> Dict[str, Dict[str, Any]]:
+        return {name: dict(seg) for name, seg in self._segments.items()}
+
+    def _apply_nodes(self, nodes: Dict[str, Dict[str, Any]]) -> None:
+        self._segments = {str(name): dict(seg or {}) for name, seg in nodes.items()}
+
+    def save(self) -> None:
+        if self._storage is None:
+            return
+        self._storage.save(self._nodes())
+
+    def save_dirty(self) -> None:
+        if self._storage is None or not self._dirty:
+            return
+        nodes = {name: dict(self._segments[name]) for name in self._dirty if name in self._segments}
+        if nodes:
+            self._storage.save(nodes if len(nodes) == len(self._segments) else {"nodes": nodes})
+        self._dirty.clear()
+
+    def restore(self) -> None:
+        if self._storage is None:
+            return
+        state = self._storage.load()
+        if not state:
+            return
+        nodes = state.get("nodes") if isinstance(state, dict) and "nodes" in state else state
+        if isinstance(nodes, dict):
+            self._apply_nodes(nodes)
 
     def __repr__(self) -> str:
-        return f"<StrategyContext keys={len(self._data)}>"
+        return f"<TradingContext nodes={len(self._segments)}>"
 
 
 def _selection_kind_from_identity(factor: BaseFactor) -> str:
@@ -80,13 +174,13 @@ class BaseComponent(ABC):
         self._next_idy = 0
         self._next_request_id = 0
         self._next_generation = 0
-        self.context: Optional[StrategyContext] = None
+        self.context: Optional[TradingContext] = None
 
     @property
     def strategy_name(self) -> str:
         return self.name
 
-    def set_context(self, context: StrategyContext) -> None:
+    def set_context(self, context: TradingContext) -> None:
         self.context = context
         for factor in self.all_factors:
             factor.context = context
@@ -739,4 +833,4 @@ class BaseRiskControl(BaseComponent):
         self.risk_decision = RiskDecision(self.is_trading_allowed, self.target_position_ratio, self.risk_decision.force_liquidate)
 
 
-__all__ = ["BaseStockPicking", "BaseTimeSelection", "BaseRiskControl", "RiskDecision", "RiskLayerResult", "StrategyContext"]
+__all__ = ["BaseStockPicking", "BaseTimeSelection", "BaseRiskControl", "ContextSegment", "RiskDecision", "RiskLayerResult", "StateStorage", "TradingContext"]

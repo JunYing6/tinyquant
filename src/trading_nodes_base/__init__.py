@@ -14,6 +14,9 @@ _EXPORT_MODULES = {
     "BaseStrategy": "trading_nodes_base.strategies",
     "BaseStream": "trading_nodes_base.streams",
     "BaseTimeSelection": "trading_nodes_base.methods",
+    "ContextSegment": "trading_nodes_base.methods",
+    "StateStorage": "trading_nodes_base.methods",
+    "TradingContext": "trading_nodes_base.methods",
 }
 
 __all__ = list(_EXPORT_MODULES)

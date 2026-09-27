@@ -28,7 +28,7 @@ from trading_nodes_base.methods import (
     BaseStockPicking,
     BaseTimeSelection,
     RiskDecision,
-    StrategyContext,
+    TradingContext,
 )
 from trading_nodes_base.minds import BaseMind
 from trading_nodes_base.strategies import BaseStrategy
@@ -292,7 +292,7 @@ def test_factor_lifecycle_normalizes_output_and_component_routes_queries() -> No
     factor = QueryFactor("query")
     component = Risk()
     component.all_factors = [factor]
-    context = StrategyContext()
+    context = TradingContext()
     component.set_context(context)
 
     queries = component.get_queries("20240102")

@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional
 
 from tools.data import DataBatch, DataRequest
 from trading_nodes_base.requests import canonical_request, decode_routing, table_records, with_routing
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
-from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection, RiskDecision, StrategyContext
+from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection, RiskDecision, StateStorage, TradingContext
 
 
 @dataclass
@@ -34,20 +34,6 @@ class _InflightOrder:
     submitted_volume: int
     requested_volume: int
     filled_volume: int = 0
-
-
-class StateStorage(Protocol):
-    """Injected persistence backend for cross-session strategy state.
-
-    Live trading may not run around the clock; the strategy persists a small
-    state dict (original BUY targets, tail-replenishment flags, pending orders)
-    so it can resume the next session.  Implementations are provider-neutral
-    (file, DB, redis, ...); the base class only depends on this protocol.
-    """
-
-    def save(self, state: Mapping[str, Any]) -> None: ...
-
-    def load(self) -> Mapping[str, Any]: ...
 
 
 def _request_to_dict(request: ExecutionRequest) -> Dict[str, Any]:
@@ -106,7 +92,8 @@ class BaseStrategy:
         self.timer = timer
         self.risk_ctrl = risk_ctrl
         self.account: Any = None
-        self.context = StrategyContext()
+        self._state_storage: Optional[StateStorage] = state_storage
+        self.context = TradingContext(self._state_storage)
         self._current_date: Any = None
         self._daily_pipeline_triggered = False
         self._live_trading = False
@@ -120,7 +107,6 @@ class BaseStrategy:
         self._original_buy_targets: Dict[str, int] = {}
         self._tail_replenished: bool = False
         self._last_risk_target_ratio: float = 1.0
-        self._state_storage: Optional[StateStorage] = state_storage
         self.restore_state()
 
     @staticmethod
@@ -713,16 +699,16 @@ class BaseStrategy:
         }
 
     def save_state(self) -> None:
-        """Persist cross-session state through the injected backend."""
-        if self._state_storage is None:
-            return
-        self._state_storage.save(self._collect_state())
+        """Persist this strategy's node state through the shared TradingContext."""
+        node = self.context.node("strategy")
+        for key, value in self._collect_state().items():
+            node.set(key, value)
+        self.context.save()
 
     def restore_state(self) -> None:
-        """Load persisted state from the injected backend (called on init)."""
-        if self._state_storage is None:
-            return
-        state = self._state_storage.load()
+        """Load this strategy's node state from the shared TradingContext."""
+        node = self.context.node("strategy")
+        state = node.to_dict()
         if not state:
             return
         self._original_buy_targets = dict(state.get("original_buy_targets", {}) or {})
