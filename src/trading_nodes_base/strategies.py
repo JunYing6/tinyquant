@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 
 from tools.data import DataBatch, DataRequest
 from trading_nodes_base.requests import canonical_request, decode_routing, table_records, with_routing
@@ -36,6 +36,49 @@ class _InflightOrder:
     filled_volume: int = 0
 
 
+class StateStorage(Protocol):
+    """Injected persistence backend for cross-session strategy state.
+
+    Live trading may not run around the clock; the strategy persists a small
+    state dict (original BUY targets, tail-replenishment flags, pending orders)
+    so it can resume the next session.  Implementations are provider-neutral
+    (file, DB, redis, ...); the base class only depends on this protocol.
+    """
+
+    def save(self, state: Mapping[str, Any]) -> None: ...
+
+    def load(self) -> Mapping[str, Any]: ...
+
+
+def _request_to_dict(request: ExecutionRequest) -> Dict[str, Any]:
+    return {
+        "code": request.code,
+        "action": request.action,
+        "time": request.time,
+        "price": request.price,
+        "volume": request.volume,
+        "sizing_intent": request.sizing_intent,
+        "order_type": request.order_type,
+        "reason": request.reason,
+        "mode": request.mode.value if request.mode is not None else None,
+    }
+
+
+def _request_from_dict(data: Mapping[str, Any]) -> ExecutionRequest:
+    mode = data.get("mode")
+    return ExecutionRequest(
+        code=data["code"],
+        action=data["action"],
+        time=data.get("time"),
+        price=float(data.get("price", 0.0)),
+        volume=data.get("volume"),
+        sizing_intent=data.get("sizing_intent"),
+        order_type=data.get("order_type"),
+        reason=data.get("reason", ""),
+        mode=ExecutionMode(mode) if mode else None,
+    )
+
+
 class BaseStrategy:
     tick_mode = False
     execution_timing = "close"
@@ -50,6 +93,7 @@ class BaseStrategy:
         timer: Optional[BaseTimeSelection] = None,
         risk_ctrl: Optional[BaseRiskControl] = None,
         trade_config: Optional[Dict[str, Any]] = None,
+        state_storage: Optional[StateStorage] = None,
     ) -> None:
         if timer is None:
             raise ValueError("BaseStrategy requires a timer with Tick execution")
@@ -73,6 +117,11 @@ class BaseStrategy:
         self._target_weights: Dict[str, float] = {}
         self.order_events: List[dict[str, Any]] = []
         self.tick_matcher: Any = None
+        self._original_buy_targets: Dict[str, int] = {}
+        self._tail_replenished: bool = False
+        self._last_risk_target_ratio: float = 1.0
+        self._state_storage: Optional[StateStorage] = state_storage
+        self.restore_state()
 
     @staticmethod
     def table_records(batch: DataBatch) -> tuple:
@@ -238,18 +287,63 @@ class BaseStrategy:
         active_sell_codes = self._active_sell_codes()
         if self.risk_ctrl is not None:
             self._apply_risk_decision(self.risk_ctrl.on_tick(tick))
+        self._last_risk_target_ratio = (
+            self.risk_ctrl.target_position_ratio if self.risk_ctrl is not None else 1.0
+        )
         requests = self.timer.tick_input(tick)
         if not all(isinstance(request, ExecutionRequest) for request in requests):
             raise TypeError("timer tick_input must return ExecutionRequest values")
+        self._preserve_buy_targets(requests)
         if self.tick_matcher is not None:
             self._queue_tick_requests(requests, active_sell_codes, active_request_keys)
         else:
             self._queue_tick_requests(requests, active_keys=active_request_keys)
+        self._maybe_queue_tail_replenishment(tick)
         price_dict = {tick["code"]: tick.get("price", 0)} if tick.get("code") else {}
         if self.tick_matcher is not None:
             self._submit_pending_to_matcher(price_dict)
             return []
         return self._execute_pending_orders(price_dict)
+
+    def _preserve_buy_targets(self, requests: List[ExecutionRequest]) -> None:
+        """Keep the timer-originated BUY volume before risk scaling.
+
+        A 1000-share signal scaled to 800 by an 80% risk ratio keeps its
+        original 1000 in ``_original_buy_targets``; tail replenishment uses it
+        to compute how much to add back when risk recovers.
+        """
+        for request in requests:
+            if request.action == "BUY" and request.volume is not None and request.volume > 0:
+                self._original_buy_targets[request.code] = (
+                    self._original_buy_targets.get(request.code, 0) + request.volume
+                )
+
+    def _maybe_queue_tail_replenishment(self, tick: Dict[str, Any]) -> None:
+        """End-of-day 补仓: top up toward the ORIGINAL timer target scaled by
+        the recovered risk ratio, filling only the gap left by risk scaling.
+
+        Original 1000-share target, risk was 80% (bought 800); when risk
+        recovers the tail fills the remaining ~200 to reach ``orig * ratio``.
+        """
+        if self._tail_replenished or str(tick.get("time", "")) <= "14:56:54":
+            return
+        if self.timer.pending_intents:
+            return
+        for code, original_volume in self._original_buy_targets.items():
+            held = int(self._position_details.get(code, {}).get("volume", 0))
+            target = self._buy_lot_round(original_volume * self._last_risk_target_ratio)
+            volume = target - held
+            if volume <= 0:
+                continue
+            self._pending_orders.append(ExecutionRequest(
+                code=code,
+                action="BUY",
+                time=tick.get("time"),
+                price=float(tick.get("price", 0.0)),
+                volume=self._buy_lot_round(volume),
+                reason="risk_tail_replenishment",
+            ))
+        self._tail_replenished = True
 
     def _size_requests_by_risk(self, requests: List[ExecutionRequest]) -> List[ExecutionRequest]:
         ratio = self.risk_ctrl.target_position_ratio if self.risk_ctrl is not None else 1.0
@@ -608,6 +702,37 @@ class BaseStrategy:
             return
         self._position_details = {code: {"volume": volume, "cost": getattr(self.account, "cost_prices", {}).get(code, 0.0)} for code, volume in getattr(self.account, "positions", {}).items()}
 
+    def _collect_state(self) -> Dict[str, Any]:
+        return {
+            "current_date": str(self._current_date) if self._current_date is not None else None,
+            "original_buy_targets": dict(self._original_buy_targets),
+            "tail_replenished": self._tail_replenished,
+            "last_risk_target_ratio": self._last_risk_target_ratio,
+            "target_weights": dict(self._target_weights),
+            "pending_orders": [_request_to_dict(request) for request in self._pending_orders],
+        }
+
+    def save_state(self) -> None:
+        """Persist cross-session state through the injected backend."""
+        if self._state_storage is None:
+            return
+        self._state_storage.save(self._collect_state())
+
+    def restore_state(self) -> None:
+        """Load persisted state from the injected backend (called on init)."""
+        if self._state_storage is None:
+            return
+        state = self._state_storage.load()
+        if not state:
+            return
+        self._original_buy_targets = dict(state.get("original_buy_targets", {}) or {})
+        self._tail_replenished = bool(state.get("tail_replenished", False))
+        self._last_risk_target_ratio = float(state.get("last_risk_target_ratio", 1.0) or 1.0)
+        self._target_weights = dict(state.get("target_weights", {}) or {})
+        self._pending_orders = [
+            _request_from_dict(data) for data in (state.get("pending_orders", []) or [])
+        ]
+
     def daily_execute(self, price_dict: Dict[str, float]) -> List[tuple]:
         self._enforce_risk_request_policy()
         if self._risk_requires_liquidation():
@@ -616,6 +741,7 @@ class BaseStrategy:
 
     def on_day_end(self) -> None:
         self.timer.assert_no_unconsumed_intents()
+        self.save_state()
 
 
-__all__ = ["BaseStrategy"]
+__all__ = ["BaseStrategy", "StateStorage"]
