@@ -449,6 +449,7 @@ class BaseTimeSelection(BaseComponent):
         self.positions: Dict[str, Any] = {}
         self.current_time: Optional[str] = None
         self.account_info: Optional[Dict[str, Any]] = None
+        self.default_buy_sizing: float = 0.1
 
     def _validate_governed_factors(self) -> None:
         if not self.tick_factors:
@@ -554,7 +555,7 @@ class BaseTimeSelection(BaseComponent):
             if not matching and not factor.is_target_code(code):
                 continue
             outputs = self._validate_factor_output(factor, factor.on_tick(tick, tuple(matching)), ExecutionRequest)
-            requests.extend(outputs)
+            requests.extend(self._apply_sizing(outputs, matching))
             available_intents = list(matching)
             for request in outputs:
                 for index, intent in enumerate(available_intents):
@@ -565,6 +566,52 @@ class BaseTimeSelection(BaseComponent):
                         break
         self.pending_intents = remaining
         return requests
+
+    def _apply_sizing(
+        self, requests: List[ExecutionRequest], intents: List[SignalIntent]
+    ) -> List[ExecutionRequest]:
+        """Sizing hook: called automatically when a Timing factor triggers
+        execution requests.  Timing factors may emit bare signals; the timer
+        computes the position quantity here.  Subclasses override this method
+        to apply their own sizing rules."""
+        if not requests:
+            return requests
+        default_weight = 1.0 / max(len(self.selector_pool), 1)
+        sized: List[ExecutionRequest] = []
+        for request in requests:
+            if request.volume is not None or request.sizing_intent is not None:
+                sized.append(request)
+                continue
+            sizing = self._sizing_from_intent(request, intents)
+            if sizing is None:
+                if request.action == "BUY":
+                    sizing = self.default_buy_sizing * self._intent_weight(request.code, default_weight)
+                else:
+                    sizing = 1.0
+            if request.action == "SELL":
+                sizing = max(0.0, min(sizing, 1.0))
+            if sizing <= 0:
+                continue
+            sized.append(replace(request, sizing_intent=sizing))
+        return sized
+
+    @staticmethod
+    def _sizing_from_intent(request: ExecutionRequest, intents: List[SignalIntent]) -> Optional[float]:
+        for intent in intents:
+            if intent.code != request.code or intent.action != request.action:
+                continue
+            meta = dict(intent.metadata)
+            for key in ("sizing_intent", "volume", "target_weight"):
+                value = meta.get(key)
+                if value is not None:
+                    return float(value)
+            break
+        return None
+
+    def _intent_weight(self, code: str, default: float) -> float:
+        if self.selector_pool and code in self.selector_pool:
+            return 1.0 / len(self.selector_pool)
+        return default
 
     @staticmethod
     def _validate_factor_output(factor: BaseFactor, output: Any, expected_type: type) -> List[Any]:
