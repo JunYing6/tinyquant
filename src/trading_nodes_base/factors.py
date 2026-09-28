@@ -69,6 +69,7 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         self.factor_name = factor_name
         self.params = dict(params or {})
         self.context: Any = None
+        self._node_prefix: str = ""
         self._received_data: Dict[str, Any] = {}
         self._history_received_data: Dict[str, Any] = {}
         self._request_status: Dict[str, bool] = {}
@@ -88,6 +89,16 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         if name in params:
             return params[name]
         raise AttributeError(f"{type(self).__name__!r} has no attribute {name!r}")
+
+    def set_node_prefix(self, prefix: str) -> None:
+        self._node_prefix = prefix
+
+    @property
+    def state(self) -> Any:
+        if self.context is None:
+            raise RuntimeError(f"factor {self.factor_name!r} context not injected; call set_context first")
+        key = f"{self._node_prefix}:{self.factor_name}" if self._node_prefix else self.factor_name
+        return self.context.node(key)
 
     @abstractmethod
     def get_query_lst(

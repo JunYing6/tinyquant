@@ -175,15 +175,33 @@ class BaseComponent(ABC):
         self._next_request_id = 0
         self._next_generation = 0
         self.context: Optional[TradingContext] = None
+        self._strategy_name: str = ""
+        self._node_key: Optional[str] = None
 
     @property
     def strategy_name(self) -> str:
         return self.name
 
-    def set_context(self, context: TradingContext) -> None:
+    def set_context(self, context: TradingContext, strategy_name: str = "") -> None:
         self.context = context
+        self._strategy_name = strategy_name
+        self._node_key = f"{strategy_name}:{self.name}" if strategy_name else self.name
+        seen: Dict[str, BaseFactor] = {}
         for factor in self.all_factors:
             factor.context = context
+            if factor.factor_name in seen:
+                raise ValueError(
+                    f"duplicate factor name {factor.factor_name!r} under component {self.name!r} "
+                    "would collide in the shared TradingContext"
+                )
+            seen[factor.factor_name] = factor
+            factor.set_node_prefix(self._node_key)
+
+    @property
+    def state(self) -> ContextSegment:
+        if self.context is None:
+            raise RuntimeError(f"component {self.name!r} context not injected; call set_context first")
+        return self.context.node(self._node_key or self.name)
 
     def get_queries(self, date: Any) -> List[Any]:
         queries: List[Any] = []

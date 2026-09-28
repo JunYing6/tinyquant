@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from tools.data import DataBatch, DataRequest
 from trading_nodes_base.requests import canonical_request, decode_routing, table_records, with_routing
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
-from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection, RiskDecision, StateStorage, TradingContext
+from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection, ContextSegment, RiskDecision, StateStorage, TradingContext
 
 
 @dataclass
@@ -120,9 +120,21 @@ class BaseStrategy:
         return dict(getattr(self.account, "positions", {}))
 
     def _inject_context(self) -> None:
+        seen: Dict[str, object] = {}
         for component in (self.selector, self.timer, self.risk_ctrl):
-            if component is not None:
-                component.set_context(self.context)
+            if component is None:
+                continue
+            if component.name in seen:
+                raise ValueError(
+                    f"duplicate component name {component.name!r} in strategy {self.strategy_name!r} "
+                    "would collide in the shared TradingContext"
+                )
+            seen[component.name] = component
+            component.set_context(self.context, strategy_name=self.strategy_name)
+
+    @property
+    def state(self) -> ContextSegment:
+        return self.context.node(self.strategy_name)
 
     def set_account(self, account: Any) -> None:
         self.account = account
@@ -700,14 +712,14 @@ class BaseStrategy:
 
     def save_state(self) -> None:
         """Persist this strategy's node state through the shared TradingContext."""
-        node = self.context.node("strategy")
+        node = self.context.node(self.strategy_name)
         for key, value in self._collect_state().items():
             node.set(key, value)
         self.context.save()
 
     def restore_state(self) -> None:
         """Load this strategy's node state from the shared TradingContext."""
-        node = self.context.node("strategy")
+        node = self.context.node(self.strategy_name)
         state = node.to_dict()
         if not state:
             return
