@@ -564,15 +564,14 @@ class BaseTimeSelection(BaseComponent):
         self.default_buy_sizing: float = 0.1
 
     def _validate_governed_factors(self) -> None:
-        if not self.tick_factors:
-            raise ValueError("timer requires at least one TickTimingFactor")
         if not all(isinstance(f, KlineTimingFactor) for f in self.kline_factors):
             raise TypeError("kline_factors must contain KlineTimingFactor instances")
         if not all(isinstance(f, TickTimingFactor) for f in self.tick_factors):
             raise TypeError("tick_factors must contain TickTimingFactor instances")
         emitted = set().union(*(f.emitted_actions for f in self.kline_factors)) if self.kline_factors else set()
         accepted = set().union(*(f.accepted_intent_actions for f in self.tick_factors))
-        missing = emitted - accepted
+        # 纯 K 线策略（无 tick 因子）由引擎按下一根 K 线撮合，跳过意图覆盖校验
+        missing = emitted - accepted if self.tick_factors else set()
         if missing:
             raise ValueError(f"missing Tick execution coverage for actions: {sorted(missing)}")
         self.emitted_actions = frozenset(emitted)

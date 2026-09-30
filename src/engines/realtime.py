@@ -79,6 +79,7 @@ class RealTimeTradeEngine:
         self._signal_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
         self._signal_thread: threading.Thread | None = None
         self._lock = threading.RLock()
+        self._kline_pending: list[Any] = []
 
     def start(self) -> None:
         with self._lock:
@@ -161,6 +162,8 @@ class RealTimeTradeEngine:
                 before = dict(self.account.positions)
                 self._update_price(event)
                 self._adapter.feed_market_event(event)
+                self._sweep_kline_intents(event.event_time)
+                self._fire_kline_pending(event.event_time)
                 if not self.is_stream:
                     self._queue_position_delta(before, event.event_time)
             except Exception:
@@ -251,6 +254,79 @@ class RealTimeTradeEngine:
     def _enqueue_orders(self, orders: list[tuple]) -> None:
         for order in orders:
             self._signal_queue.put(tuple(order))
+
+    def _strategies(self) -> list[Any]:
+        return list(self.entity.strategies.values()) if self.is_stream else [self.entity]
+
+    def _in_trading_time(self, event_time: datetime | None) -> bool:
+        if self._session is None or event_time is None:
+            return False
+        for phase in self._session.phases:
+            if phase.start <= event_time <= phase.end and getattr(phase, "accepts_trades", True):
+                return True
+        return False
+
+    def _sweep_kline_intents(self, event_time: datetime | None) -> None:
+        """纯 K 线策略（无 tick 因子）的 K 线信号调度。
+
+        交易时段内 → 立即发单；非交易时段 → 存入待发队列，到下一交易时段再发。
+        分发/时机由引擎负责，策略只发信号。
+        """
+        for strategy in self._strategies():
+            timer = strategy.timer
+            if timer.tick_factors:
+                continue  # tick 驱动：意图由 tick 因子消费，引擎不接管
+            intents = list(timer.pending_intents)
+            if not intents:
+                continue
+            timer.pending_intents.clear()
+            if self._in_trading_time(event_time):
+                self._execute_intents_now(intents, event_time)
+            else:
+                self._kline_pending.extend(intents)
+
+    def _fire_kline_pending(self, event_time: datetime | None) -> None:
+        if not self._kline_pending or not self._in_trading_time(event_time):
+            return
+        intents, self._kline_pending = self._kline_pending, []
+        self._execute_intents_now(intents, event_time)
+
+    def _execute_intents_now(self, intents: list[Any], event_time: datetime | None) -> None:
+        orders: list[tuple] = []
+        for intent in intents:
+            order = self._build_kline_order(intent, event_time)
+            if order is not None:
+                orders.append(order)
+        if orders:
+            self._enqueue_orders(orders)
+
+    def _build_kline_order(self, intent: Any, event_time: datetime | None) -> tuple | None:
+        code = getattr(intent, "code", None)
+        if not isinstance(code, str):
+            return None
+        price = self._last_prices.get(code)
+        if not isinstance(price, (int, float)) or price <= 0:
+            return None
+        metadata = dict(getattr(intent, "metadata", {}) or {})
+        if getattr(intent, "action", "") == "BUY":
+            volume = int(metadata.get("volume") or 0)
+            if volume <= 0:
+                sizing = float(metadata.get("sizing_intent", 1.0))
+                volume = int(self.account.total_equity * sizing / price)
+        else:
+            held = int(self.account.positions.get(code, 0))
+            volume = int(metadata.get("volume") or 0)
+            if volume <= 0:
+                sizing = float(metadata.get("sizing_intent", 1.0))
+                volume = int(held * sizing)
+            if volume > held:
+                volume = held
+        if volume <= 0:
+            return None
+        signed = volume if getattr(intent, "action", "") == "BUY" else -volume
+        date_key = self._current_date.strftime("%Y%m%d") if self._current_date else ""
+        time_key = event_time.strftime("%H:%M:%S") if event_time is not None and hasattr(event_time, "strftime") else ""
+        return (date_key, time_key, code, float(price), signed, "n")
 
     def _signal_consumer(self) -> None:
         while self._running or not self._signal_queue.empty():

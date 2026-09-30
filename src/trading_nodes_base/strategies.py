@@ -82,11 +82,10 @@ class BaseStrategy:
         state_storage: Optional[StateStorage] = None,
     ) -> None:
         if timer is None:
-            raise ValueError("BaseStrategy requires a timer with Tick execution")
+            raise ValueError("BaseStrategy requires a timer")
         if not isinstance(timer, BaseTimeSelection):
             raise TypeError("timer must be a BaseTimeSelection")
-        if not timer.tick_factors:
-            raise ValueError("BaseStrategy timer requires at least one Tick factor")
+        # 允许纯 K 线策略（tick_factors 为空）：由引擎按下一根 K 线撮合，无需 tick 因子
         self.strategy_name = strategy_name
         self.selector = selector
         self.timer = timer
