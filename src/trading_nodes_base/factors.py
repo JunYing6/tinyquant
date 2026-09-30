@@ -353,24 +353,26 @@ class RiskFloatFactor(BaseFactor):
 
 
 class StreamFactor(BaseFactor):
-    """实时 K 线与 tick 因子共用的目标代码状态。"""
+    """实时 K 线与 tick 因子共用的数据需求与目标代码状态。"""
 
     def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(factor_name, params)
         self._target_codes: Set[str] = set()
         self._targets_configured = False
 
-    def data_requirements(
+    def required_codes(
         self,
         pool: Optional[List[str]] = None,
         positions: Optional[Dict[str, Any]] = None,
         account_info: Optional[Dict[str, Any]] = None,
         **extra: Any,
     ) -> List[str]:
-        """Data-need declaration hook: which codes this factor needs tick/K-line
-        data for.  The base returns ``[]`` (declares nothing).  Subclasses
-        override.  The timer above aggregates these to build the subscription
-        pool (distribution is handled by the timer, not the factor)."""
+        """数据需求声明钩子：返回本因子需要获取 tick/K 线数据的代码集合。
+
+        基类默认返回 ``[]``（不声明任何数据需求）；子类覆写该方法，按自身
+        逻辑声明所需代码。择时器在上方聚合各因子的声明，统一决定数据订阅池
+        （分发逻辑由择时器负责，因子只管声明，不参与分发）。
+        """
         return []
 
     def is_target_code(self, code: str) -> bool:

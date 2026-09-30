@@ -634,8 +634,9 @@ class BaseTimeSelection(BaseComponent):
         self._extra_data = extra_data
         pool_arg = list(self.stock_pool) if filter_codes else None
         required: Set[str] = set()
+        # 分发：聚合各因子声明的数据需求，得到订阅池，并给每个因子设过滤目标
         for factor in self.all_factors:
-            codes = factor.data_requirements(pool_arg, positions, account_info)
+            codes = factor.required_codes(pool_arg, positions, account_info)
             factor._set_target_codes(codes)
             required.update(codes)
         self.data_required_pool = sorted(required)
