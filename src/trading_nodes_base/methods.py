@@ -633,8 +633,12 @@ class BaseTimeSelection(BaseComponent):
         self.account_info = account_info
         self._extra_data = extra_data
         pool_arg = list(self.stock_pool) if filter_codes else None
+        required: Set[str] = set()
         for factor in self.all_factors:
-            factor.set_target_pool(pool_arg, positions, account_info)
+            codes = factor.data_requirements(pool_arg, positions, account_info)
+            factor._set_target_codes(codes)
+            required.update(codes)
+        self.data_required_pool = sorted(required)
         self._daily_logic()
 
     def kline_bar_input(self, bar: KlineBar) -> List[SignalIntent]:
