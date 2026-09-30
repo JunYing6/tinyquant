@@ -12,11 +12,21 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from enum import StrEnum
 from typing import Any, Callable, Mapping
 
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest
 
 _MATCH_MODES = frozenset({"quote_or_last", "last_trade_only", "quote_only"})
+
+
+class OrderStatus(StrEnum):
+    SUBMITTED = "SUBMITTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
+    REJECTED = "REJECTED"
 
 
 @dataclass
@@ -30,7 +40,7 @@ class MatchingOrder:
     seq: dict[str, int] = field(default_factory=dict)
     trade_date: str = ""
     filled_volume: int = 0
-    status: str = "SUBMITTED"
+    status: OrderStatus = OrderStatus.SUBMITTED
     reason: str = ""
 
 
@@ -69,6 +79,14 @@ class MatchingEngine:
             }
         )
 
+    @staticmethod
+    def _infer_timing(request: ExecutionRequest) -> str:
+        if request.mode is ExecutionMode.LIMIT:
+            return "limit"
+        if request.mode is ExecutionMode.MARKET or request.price <= 0:
+            return "market"
+        return "limit"  # 带价无 mode 的请求按旧语义视为限价
+
     def submit_requests(
         self, requests: list[ExecutionRequest], trade_date: Any
     ) -> list[MatchingOrder]:
@@ -77,9 +95,7 @@ class MatchingEngine:
         for request in requests:
             if request.volume is None or request.volume <= 0:
                 continue
-            timing = request.timing or (
-                "limit" if request.mode is ExecutionMode.LIMIT else "market"
-            )
+            timing = request.timing or self._infer_timing(request)
             order = MatchingOrder(
                 uuid.uuid4().hex,
                 request.code,
@@ -138,7 +154,7 @@ class MatchingEngine:
                 continue
             order.filled_volume += filled
             if order.filled_volume < order.volume:
-                order.status = "PARTIALLY_FILLED"
+                order.status = OrderStatus.PARTIALLY_FILLED
                 self._emit(order, "PARTIALLY_FILLED")
             else:
                 self._transition(order, "FILLED", "FILLED")
@@ -172,7 +188,7 @@ class MatchingEngine:
         return float(price), True  # market
 
     def _transition(self, order: MatchingOrder, status: str, reason: str) -> None:
-        order.status = status
+        order.status = OrderStatus(status)
         order.reason = reason
         if order.order_id in self._pending:
             self._pending.remove(order.order_id)

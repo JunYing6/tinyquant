@@ -6,12 +6,11 @@ from typing import Any, Mapping
 import pytest
 
 from engines.core.account import Account
-from engines.core.fast_execution import FastExecutionAdapter
 from engines.core.kline_aggregator import KlineAggregator
+from engines.core.matching import MatchingEngine, MatchingOrder, OrderStatus
 from engines.core.performance import compute_stats
 from engines.core.pipeline import DataProviderError, UnifiedDataPipeline
 from engines.core.slippage import SlippageModel
-from engines.core.tick_matching import MatchingOrder, OrderStatus, TickMatchingEngine
 from engines.core.trading_adapter import TradingContractAdapter
 from engines.core.trading_clock import TradingDayContext
 from tools.data import Bar, DataBatch, DataProvenance, DataRequest, QualityReport, TradeTick
@@ -43,11 +42,14 @@ def test_slippage_model_supports_none_and_proportional_prices() -> None:
     assert SlippageModel(model="none").apply(10.0, "BUY") == 10.0
 
 
+def _tick(code: str, price: float, ask: float | None = None, bid: float | None = None):
+    return type("T", (), {"instrument_id": code, "price": price, "ask1_price": ask, "bid1_price": bid, "ask_levels": None, "bid_levels": None})()
+
+
 def test_tick_matcher_does_not_fill_outside_order_conditions() -> None:
     fills: list[tuple] = []
     events: list[dict] = []
-    matcher = TickMatchingEngine(fills.extend, events.append)
-    matcher.begin_day("20240102")
+    matcher = MatchingEngine(fills.extend, events.append)
     matcher.submit_requests(
         [
             ExecutionRequest(
@@ -62,10 +64,7 @@ def test_tick_matcher_does_not_fill_outside_order_conditions() -> None:
         "20240102",
     )
 
-    matched = matcher.match(
-        {"code": "000001.SZ", "time": "09:30:01", "price": 10.1},
-        "20240102",
-    )
+    matched = matcher.match_event(_tick("000001.SZ", 10.1, ask=10.1, bid=10.0), "20240102")
 
     assert matched == []
     assert fills == []
@@ -74,16 +73,13 @@ def test_tick_matcher_does_not_fill_outside_order_conditions() -> None:
 
 def test_tick_matcher_uses_limit_semantics_for_priced_request_without_mode() -> None:
     fills: list[tuple] = []
-    matcher = TickMatchingEngine(fills.extend)
+    matcher = MatchingEngine(fills.extend)
     matcher.submit_requests(
         [ExecutionRequest("000001.SZ", "BUY", "09:30:00", price=10.0, volume=100)],
         "20240102",
     )
 
-    matched = matcher.match(
-        {"code": "000001.SZ", "time": "09:30:01", "price": 10.1},
-        "20240102",
-    )
+    matched = matcher.match_event(_tick("000001.SZ", 10.1, ask=10.1, bid=10.0), "20240102")
 
     assert matched == []
     assert fills == []
@@ -91,7 +87,7 @@ def test_tick_matcher_uses_limit_semantics_for_priced_request_without_mode() -> 
 
 def test_tick_matcher_ignores_account_sizing_order_type_for_matching_mode() -> None:
     fills: list[tuple] = []
-    matcher = TickMatchingEngine(fills.extend)
+    matcher = MatchingEngine(fills.extend)
     matcher.submit_requests(
         [
             ExecutionRequest(
@@ -101,10 +97,7 @@ def test_tick_matcher_ignores_account_sizing_order_type_for_matching_mode() -> N
         "20240102",
     )
 
-    matched = matcher.match(
-        {"code": "000001.SZ", "time": "09:30:01", "price": 10.1},
-        "20240102",
-    )
+    matched = matcher.match_event(_tick("000001.SZ", 10.1, ask=10.1, bid=10.0), "20240102")
 
     assert matched == []
     assert fills == []
@@ -128,18 +121,19 @@ def test_kline_aggregator_emits_completed_bars_in_order() -> None:
     ]
 
 
-def test_fast_execution_adapter_defers_intent_to_next_source_bar() -> None:
-    adapter = FastExecutionAdapter()
-    adapter.queue([SignalIntent("000001.SZ", "BUY", "20240102", "entry")])
+def test_matching_engine_defers_next_bar_intent_to_next_source_bar() -> None:
+    fills: list[tuple] = []
+    matcher = MatchingEngine(fills.extend)
+    b1 = type("Bar", (), {"instrument_id": "000001.SZ", "open": 10.0, "close": 10.5})()
+    b2 = type("Bar", (), {"instrument_id": "000001.SZ", "open": 10.0, "close": 10.5})()
+    matcher.match_event(b1, "20240102")  # 信号 bar，seq -> 1
+    matcher.submit_requests(
+        [ExecutionRequest("000001.SZ", "BUY", "20240102", volume=100, timing="next_bar_open")],
+        "20240102",
+    )
+    matcher.match_event(b2, "20240102")  # 下根 bar，seq -> 2 == 1+1 -> 按 open 成交
 
-    bar_end = datetime(2024, 1, 3, 15, 0, tzinfo=timezone.utc)
-    source = Bar(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=bar_end, event_time=bar_end, available_at=bar_end, trading_date=bar_end.date(), source="test", quality="valid", metadata={}, frequency="1d", interval_start=bar_end, interval_end=bar_end, open=10.0, high=11.0, low=9.0, close=10.5, volume=100, turnover=1050, is_complete=True, price_basis="raw")
-
-    requests = adapter.on_source_bar(source)
-
-    assert requests == [
-        ExecutionRequest("000001.SZ", "BUY", bar_end, price=10.0, reason="entry")
-    ]
+    assert fills and fills[0][3] == 10.0 and fills[0][4] == 100
 
 
 def test_trading_day_context_requires_prior_as_of_date() -> None:
@@ -230,24 +224,19 @@ def test_tick_matcher_reports_partial_account_fill_and_retries_remainder() -> No
         calls.append(orders)
         return [(orders[0][0], orders[0][1], orders[0][2], orders[0][3], 50, "n")]
 
-    matcher = TickMatchingEngine(partially_filling_account, events.append)
+    matcher = MatchingEngine(partially_filling_account, events.append)
     matcher.submit_requests(
-        [ExecutionRequest("000001.SZ", "BUY", "09:30:00", 10.0, volume=100)],
+        [ExecutionRequest("000001.SZ", "BUY", "09:30:00", price=10.0, volume=100)],
         "20240102",
     )
 
-    first = matcher.match(
-        {"code": "000001.SZ", "time": "09:30:01", "price": 10.0},
-        "20240102",
-    )
+    tick = _tick("000001.SZ", 10.0, ask=10.0, bid=9.9)
+    first = matcher.match_event(tick, "20240102")
 
     assert first[0].status is OrderStatus.PARTIALLY_FILLED
     assert first[0].filled_volume == 50
 
-    second = matcher.match(
-        {"code": "000001.SZ", "time": "09:30:02", "price": 10.0},
-        "20240102",
-    )
+    second = matcher.match_event(tick, "20240102")
 
     assert calls[1][0][4] == 50
     assert second[0].status is OrderStatus.FILLED
@@ -346,7 +335,7 @@ def test_trading_adapter_forwards_partial_match_fill_volume() -> None:
                     code="000001.SZ",
                     action="BUY",
                     volume=100,
-                    order_type="MARKET",
+                    timing="market",
                     limit_price=None,
                     trade_date="20240102",
                     status=OrderStatus.PARTIALLY_FILLED,
