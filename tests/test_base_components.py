@@ -207,7 +207,7 @@ class HistoryClearingKlineFactor(KlineTimingFactor):
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
-        self.set_targets({"000001.SZ"})
+        self.set_target_pool({"000001.SZ"})
         return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
 
@@ -540,7 +540,7 @@ def test_forced_liquidation_refreshes_position_details_from_current_account() ->
 
 def test_timer_history_routes_without_clearing_active_factor_state() -> None:
     kline = HistoryClearingKlineFactor("history")
-    kline.set_targets({"000001.SZ"})
+    kline.set_target_pool({"000001.SZ"})
     timer = BaseTimeSelection("history-timer", [kline], [TickFactor("tick")])
     strategy = Strategy("history-strategy", timer=timer)
 
@@ -654,7 +654,7 @@ def test_strategy_daily_execute_uses_price_dict_for_pending_requests() -> None:
 )
 def test_strategy_liquidates_positions_and_blocks_buys_for_forced_risk(decision: RiskDecision) -> None:
     factor = DirectTickFactor("direct")
-    factor.set_targets({"000001.SZ"})
+    factor.set_target_pool({"000001.SZ"})
     timer = BaseTimeSelection("direct-timer", [], [factor])
     risk = BaseRiskControl("risk")
     risk.risk_decision = decision
@@ -673,7 +673,7 @@ def test_strategy_liquidates_positions_and_blocks_buys_for_forced_risk(decision:
 
 def test_strategy_drops_pending_buys_at_risk_request_boundary() -> None:
     factor = DirectTickFactor("boundary-buy")
-    factor.set_targets({"000001.SZ"})
+    factor.set_target_pool({"000001.SZ"})
     timer = BaseTimeSelection("boundary-timer", [], [factor])
     risk = BaseRiskControl("boundary-risk")
     blocked = RiskDecision(False, 0.0, True)
@@ -702,7 +702,7 @@ def test_strategy_retains_unpriceable_liquidation_and_deduplicates_sell_sources(
     sell_factor = DirectTickFactor("sell")
     sell_factor.action = "SELL"
     sell_factor.volume = 100
-    sell_factor.set_targets({"000001.SZ"})
+    sell_factor.set_target_pool({"000001.SZ"})
     timer = BaseTimeSelection("sell-timer", [], [sell_factor])
     risk = BaseRiskControl("risk")
     risk.risk_decision = RiskDecision(True, 1.0, True)
@@ -720,7 +720,7 @@ def test_strategy_retains_unpriceable_liquidation_and_deduplicates_sell_sources(
 
 def test_strategy_matcher_submission_is_not_repeated_before_order_event() -> None:
     factor = DirectTickFactor("matcher")
-    factor.set_targets({"000001.SZ"})
+    factor.set_target_pool({"000001.SZ"})
     strategy = Strategy("matcher-strategy", timer=BaseTimeSelection("matcher-timer", [], [factor]))
     matcher = FakeMatcher()
     strategy.tick_matcher = matcher
@@ -736,7 +736,7 @@ def test_strategy_matcher_submission_is_not_repeated_before_order_event() -> Non
 
 def test_strategy_filled_matcher_event_removes_inflight_source() -> None:
     factor = DirectTickFactor("filled")
-    factor.set_targets({"000001.SZ"})
+    factor.set_target_pool({"000001.SZ"})
     strategy = Strategy("filled-strategy", timer=BaseTimeSelection("filled-timer", [], [factor]))
     strategy.tick_matcher = FakeMatcher()
     strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
@@ -755,7 +755,7 @@ def test_strategy_terminal_matcher_events_return_partial_remainder_idempotently(
     terminal_status: str,
 ) -> None:
     factor = DirectTickFactor(f"{terminal_status.lower()}-partial")
-    factor.set_targets({"000001.SZ"})
+    factor.set_target_pool({"000001.SZ"})
     strategy = Strategy(
         f"{terminal_status.lower()}-partial-strategy",
         timer=BaseTimeSelection(f"{terminal_status.lower()}-partial-timer", [], [factor]),
@@ -776,10 +776,10 @@ def test_strategy_terminal_matcher_events_return_partial_remainder_idempotently(
 def test_strategy_direct_partial_fill_acknowledges_same_code_sources_proportionally() -> None:
     first_buy = DirectTickFactor("direct-first-buy")
     first_buy.volume = 100
-    first_buy.set_targets({"000001.SZ"})
+    first_buy.set_target_pool({"000001.SZ"})
     second_buy = DirectTickFactor("direct-second-buy")
     second_buy.volume = 100
-    second_buy.set_targets({"000001.SZ"})
+    second_buy.set_target_pool({"000001.SZ"})
     strategy = Strategy(
         "direct-merged-buys",
         timer=BaseTimeSelection("direct-merged-buy-timer", [], [first_buy, second_buy]),
@@ -795,7 +795,7 @@ def test_strategy_direct_partial_fill_acknowledges_same_code_sources_proportiona
 
 def test_strategy_bare_filled_matcher_event_acknowledges_entire_inflight_request() -> None:
     factor = DirectTickFactor("bare-filled")
-    factor.set_targets({"000001.SZ"})
+    factor.set_target_pool({"000001.SZ"})
     strategy = Strategy("bare-filled-strategy", timer=BaseTimeSelection("bare-filled-timer", [], [factor]))
     strategy.tick_matcher = FakeMatcher()
     strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
@@ -808,7 +808,7 @@ def test_strategy_bare_filled_matcher_event_acknowledges_entire_inflight_request
 
 def test_strategy_rejected_matcher_event_returns_source_to_pending() -> None:
     factor = DirectTickFactor("rejected")
-    factor.set_targets({"000001.SZ"})
+    factor.set_target_pool({"000001.SZ"})
     strategy = Strategy("rejected-strategy", timer=BaseTimeSelection("rejected-timer", [], [factor]))
     strategy.tick_matcher = FakeMatcher()
     strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
@@ -854,7 +854,7 @@ def test_strategy_matcher_forced_liquidation_uses_capped_sell_canonicalization()
     sell_factor = DirectTickFactor("matcher-sell")
     sell_factor.action = "SELL"
     sell_factor.volume = 200
-    sell_factor.set_targets({"000001.SZ"})
+    sell_factor.set_target_pool({"000001.SZ"})
     risk = BaseRiskControl("matcher-risk")
     risk.risk_decision = RiskDecision(False, 0.0, True)
     risk.is_trading_allowed = False
@@ -887,11 +887,11 @@ def test_strategy_matcher_merges_same_tick_sell_sources_and_retains_remainders()
     first_sell = DirectTickFactor("first-sell")
     first_sell.action = "SELL"
     first_sell.volume = 80
-    first_sell.set_targets({"000001.SZ"})
+    first_sell.set_target_pool({"000001.SZ"})
     second_sell = DirectTickFactor("second-sell")
     second_sell.action = "SELL"
     second_sell.volume = 80
-    second_sell.set_targets({"000001.SZ"})
+    second_sell.set_target_pool({"000001.SZ"})
     strategy = Strategy(
         "merged-sells",
         timer=BaseTimeSelection("merged-sells-timer", [], [first_sell, second_sell]),
@@ -922,10 +922,10 @@ def test_strategy_matcher_merges_same_tick_sell_sources_and_retains_remainders()
 def test_strategy_canonicalizes_same_code_buy_sources_before_direct_partial_fill() -> None:
     first_buy = DirectTickFactor("first-buy")
     first_buy.volume = 100
-    first_buy.set_targets({"000001.SZ"})
+    first_buy.set_target_pool({"000001.SZ"})
     second_buy = DirectTickFactor("second-buy")
     second_buy.volume = 100
-    second_buy.set_targets({"000001.SZ"})
+    second_buy.set_target_pool({"000001.SZ"})
     strategy = Strategy(
         "merged-buys",
         timer=BaseTimeSelection("merged-buys-timer", [], [first_buy, second_buy]),
@@ -945,10 +945,10 @@ def test_strategy_canonicalizes_same_code_buy_sources_before_direct_partial_fill
 def test_strategy_matcher_canonicalizes_same_code_sources_and_acknowledges_partial_volume() -> None:
     first_buy = DirectTickFactor("matcher-first-buy")
     first_buy.volume = 100
-    first_buy.set_targets({"000001.SZ"})
+    first_buy.set_target_pool({"000001.SZ"})
     second_buy = DirectTickFactor("matcher-second-buy")
     second_buy.volume = 100
-    second_buy.set_targets({"000001.SZ"})
+    second_buy.set_target_pool({"000001.SZ"})
     strategy = Strategy(
         "matcher-merged-buys",
         timer=BaseTimeSelection("matcher-merged-buy-timer", [], [first_buy, second_buy]),
@@ -1060,11 +1060,11 @@ def test_stream_nets_opposing_tick_child_deltas_by_code(
 ) -> None:
     buy_factor = DirectTickFactor("buy")
     buy_factor.volume = 100
-    buy_factor.set_targets({"000001.SZ"})
+    buy_factor.set_target_pool({"000001.SZ"})
     sell_factor = DirectTickFactor("sell")
     sell_factor.action = "SELL"
     sell_factor.volume = sell_volume
-    sell_factor.set_targets({"000001.SZ"})
+    sell_factor.set_target_pool({"000001.SZ"})
     first = Strategy("buy", timer=BaseTimeSelection("buy-timer", [], [buy_factor]))
     second = Strategy("sell", timer=BaseTimeSelection("sell-timer", [], [sell_factor]))
     stream = Stream("net-tick", [first, second], Mind())

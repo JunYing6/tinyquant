@@ -359,17 +359,35 @@ class StreamFactor(BaseFactor):
         super().__init__(factor_name, params)
         self._target_codes: Set[str] = set()
         self._targets_configured = False
+        self._pool: List[str] = []
+        self._positions: Dict[str, Any] = {}
+        self._account_info: Optional[Dict[str, Any]] = None
+        self._extra: Dict[str, Any] = {}
 
-    def set_targets(self, codes: Set[str]) -> None:
-        self._target_codes = set(codes)
-        self._targets_configured = True
+    def set_target_pool(
+        self,
+        pool: Optional[List[str]] = None,
+        positions: Optional[Dict[str, Any]] = None,
+        account_info: Optional[Dict[str, Any]] = None,
+        **extra: Any,
+    ) -> None:
+        """Single daily-init hook: the timer calls this once per day.
+
+        Sets the monitored target pool plus the trading context the factor's
+        bar/tick logic may need: holdings (optionally the original positions
+        before risk scaling) and account info.  Subclasses may override to add
+        their own per-day setup.  A falsy ``pool`` leaves the factor unconfigured
+        (``is_target_code`` accepts every code).
+        """
+        self._pool = list(pool or ())
+        self._positions = dict(positions or {})
+        self._account_info = account_info
+        self._extra = dict(extra)
+        self._target_codes = set(self._pool)
+        self._targets_configured = bool(self._pool)
 
     def is_target_code(self, code: str) -> bool:
         return not self._targets_configured or code in self._target_codes
-
-    def reset_targets(self) -> None:
-        self._target_codes.clear()
-        self._targets_configured = False
 
     def _snapshot_request_state(self) -> tuple[Any, ...]:
         return super()._snapshot_request_state() + (

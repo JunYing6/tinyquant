@@ -628,17 +628,13 @@ class BaseTimeSelection(BaseComponent):
         pass
 
     def on_daily(self, pool: List[str], positions: Dict[str, Any], account_info: Optional[Dict[str, Any]] = None, extra_data: Optional[Dict[str, Dict[str, Any]]] = None, filter_codes: bool = True) -> None:
-        for factor in self.all_factors:
-            factor.reset_targets()
         self.update_positions(positions)
         self.set_stock_pool(pool)
         self.account_info = account_info
         self._extra_data = extra_data
-        # 存在选股池时，把"股票池 ∪ 持仓池"下发给每个因子作 target，
-        # 因子通过 is_target_code 直接跳过池外代码的 bar/tick；无池(无 selector)则不设目标。
-        if filter_codes:
-            for factor in self.all_factors:
-                factor.set_targets(set(self.stock_pool))
+        pool_arg = list(self.stock_pool) if filter_codes else None
+        for factor in self.all_factors:
+            factor.set_target_pool(pool_arg, positions, account_info)
         self._daily_logic()
 
     def kline_bar_input(self, bar: KlineBar) -> List[SignalIntent]:
