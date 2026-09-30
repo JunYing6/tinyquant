@@ -271,7 +271,30 @@ class BaseStrategy:
     def on_kline_bar(self, bar: KlineBar) -> List[SignalIntent]:
         if self.risk_ctrl is not None:
             self._apply_risk_decision(self.risk_ctrl.on_bar(bar))
-        return self.timer.kline_bar_input(bar)
+        intents = self.timer.kline_bar_input(bar)
+        if self.tick_matcher is not None:
+            # 统一撮合：K线意图直接转成 next_bar_* 订单提交给撮合器
+            self._submit_kline_intents(intents)
+        return intents
+
+    def _submit_kline_intents(self, intents: List[SignalIntent]) -> None:
+        if not intents:
+            return
+        timing_map = {"open": "next_bar_open", "close": "next_bar_close"}
+        requests: List[ExecutionRequest] = []
+        for intent in intents:
+            timing = timing_map.get(intent.execution_timing or self.execution_timing, "next_bar_open")
+            metadata = dict(intent.metadata)
+            requests.append(ExecutionRequest(
+                code=intent.code, action=intent.action, time=intent.trigger_time,
+                volume=metadata.get("volume"), sizing_intent=metadata.get("sizing_intent"),
+                order_type=metadata.get("order_type"), reason=intent.reason, timing=timing,
+            ))
+        self.tick_matcher.submit_requests(requests, self._current_date)
+        consumed = {id(intent) for intent in intents}
+        self.timer.pending_intents = [
+            intent for intent in self.timer.pending_intents if id(intent) not in consumed
+        ]
 
     def on_trade(self, trade: Any) -> List[tuple]:
         return self.on_tick({"code": trade.instrument_id, "time": trade.event_time.strftime("%H:%M:%S"), "price": trade.price, "volume": trade.size, "amount": trade.turnover})

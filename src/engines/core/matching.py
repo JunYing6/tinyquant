@@ -42,12 +42,14 @@ class MatchingEngine:
         account_order: Callable[[list[tuple]], Any],
         event_sink: Callable[[Mapping[str, Any]], None] | None = None,
         match_mode: str = "quote_or_last",
+        slippage: Callable[[float, str], float] | None = None,
     ) -> None:
         if match_mode not in _MATCH_MODES:
             raise ValueError(f"match_mode must be one of {sorted(_MATCH_MODES)}")
         self._account_order = account_order
         self._event_sink = event_sink
         self._match_mode = match_mode
+        self._slippage = slippage
         self._orders: dict[str, MatchingOrder] = {}
         self._pending: list[str] = []
         self._seq: dict[str, int] = {}
@@ -115,6 +117,10 @@ class MatchingEngine:
             fill_price, ok = self._fill(order, event, self._seq.get(code, 0))
             if not ok or fill_price is None or fill_price <= 0:
                 continue
+            if self._slippage is not None:
+                fill_price = self._slippage(float(fill_price), order.action)
+                if fill_price <= 0:
+                    continue
             remaining = order.volume - order.filled_volume
             signed = remaining if order.action == "BUY" else -remaining
             try:
@@ -181,8 +187,15 @@ class MatchingEngine:
     def expire_day(self, trade_date: Any) -> None:
         day = self._date_key(trade_date)
         for order_id in list(self._pending):
-            if self._orders[order_id].trade_date == day:
-                self._transition(self._orders[order_id], "EXPIRED", "EXPIRED")
+            order = self._orders[order_id]
+            if order.timing in ("next_bar_open", "next_bar_close"):
+                # next_bar 订单存活到下一根 K 线成交；仅当目标日之后仍未成交才过期
+                expires = order.trade_date < day
+            else:
+                # 日内（market/limit）订单当日未成交即过期
+                expires = order.trade_date <= day
+            if expires:
+                self._transition(order, "EXPIRED", "EXPIRED")
 
     def pending_orders(self) -> list[MatchingOrder]:
         return [self._orders[order_id] for order_id in self._pending]

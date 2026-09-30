@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import date, datetime
 
 from tools.data.errors import DataContractError
 from typing import Any, Literal, Mapping, cast
 
 from engines.core.account import Account
-from engines.core.fast_execution import FastExecutionAdapter
+from engines.core.matching import MatchingEngine
 from engines.core.performance import compute_stats
 from engines.core.pipeline import DataProviderError, UnifiedDataPipeline
 from engines.core.slippage import SlippageModel
-from engines.core.tick_matching import TickMatchingEngine
 from engines.core.trading_adapter import TradingContractAdapter
 from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, ReplayClock, replay_events
-from trading_nodes_base.types import ExecutionRequest, KlineBar
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
 
@@ -51,10 +48,11 @@ class FastBacktestEngine:
         entity.set_account(self.account)
         self._adapter = TradingContractAdapter(entity)
         self._pipeline = UnifiedDataPipeline(entity, data_gateway, self._adapter)
-        self._fast_adapters = {strategy.strategy_name: FastExecutionAdapter(getattr(strategy, "fast_buy_timing", "open"), getattr(strategy, "fast_sell_timing", "open")) for strategy in self._strategies}
-        if self.mode == "tick":
-            for strategy in self._strategies:
-                strategy.tick_matcher = TickMatchingEngine(strategy.account.order, strategy.handle_order_event)
+        for strategy in self._strategies:
+            strategy.tick_matcher = MatchingEngine(
+                strategy.account.order, strategy.handle_order_event,
+                slippage=self.slippage.apply,
+            )
         self.trade_dates: list[str] = []
         self.equity_curve: list[dict[str, Any]] = []
         self.daily_positions: list[dict[str, Any]] = []
@@ -79,8 +77,6 @@ class FastBacktestEngine:
             if self.progress_callback is not None:
                 self.progress_callback(f"Trading day {self.trade_dates[index - 1]}", index, len(self.trade_dates))
             self._run_day(session)
-        for adapter in self._fast_adapters.values():
-            adapter.expire_day()
 
     def get_stats(self) -> dict[str, float | int]:
         return compute_stats(self.equity_curve, self.initial_capital, self.account.trade_log) if self.equity_curve else {}
@@ -100,27 +96,36 @@ class FastBacktestEngine:
             raise DataContractError(f"{batch.dataset} batch must be complete and fully consumed (request_id={batch.request_id})", dataset=batch.dataset, request_id=batch.request_id)
         bars = [record for record in batch.records if isinstance(record, Bar)]
         price_dict = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
-        if self.mode == "fast":
-            self._run_fast_day(price_dict, bars)
-        else:
-            self._run_tick_day(session, price_dict)
+        # 统一事件流：先喂每日 bar（撮合 + K线信号），再视策略需要补 tick
+        for bar in bars:
+            self._adapter.feed_daily_bar(bar)
+        if any(strategy.timer.tick_factors for strategy in self._strategies):
+            self._run_tick_replay(session, price_dict)
+        # 直接订单（策略 _pending_orders，price=0 的 MARKET 单）按当日收盘价+滑点成交
+        self._execute_pending_daily(price_dict)
+        self._adapter.flush_day(session.trading_date)
         self._settle_day(price_dict)
         self._record_day(date_key, price_dict)
 
-    def _run_fast_day(self, price_dict: dict[str, float], bars: list[Bar]) -> None:
-        for source in bars:
-            for strategy in self._strategies:
-                strategy._pending_orders.extend(self._apply_slippage(self._fast_adapters[strategy.strategy_name].on_source_bar(source)))
-            self._adapter.feed_daily_bar(source)
-            for strategy in self._strategies:
-                intents = list(strategy.timer.pending_intents)
-                if intents:
-                    self._fast_adapters[strategy.strategy_name].queue(intents)
-                    strategy.timer.pending_intents.clear()
-        self._price_priceless_fast_requests(price_dict)
-        self.entity.execute_daily(price_dict) if isinstance(self.entity, BaseStream) else cast(BaseStrategy, self.entity).daily_execute(price_dict)
+    def _execute_pending_daily(self, price_dict: dict[str, float]) -> None:
+        for strategy in self._strategies:
+            if not strategy._pending_orders:
+                continue
+            pending = list(strategy._pending_orders)
+            strategy._pending_orders = []
+            orders: list[tuple] = []
+            for request in pending:
+                price = request.price if request.price and request.price > 0 else price_dict.get(request.code)
+                if not price or price <= 0 or request.volume is None or request.volume <= 0:
+                    strategy._pending_orders.append(request)
+                    continue
+                price = self.slippage.apply(float(price), request.action)
+                signed = request.volume if request.action == "BUY" else -request.volume
+                orders.append((strategy._current_date, request.time, request.code, price, signed, "n"))
+            if orders:
+                strategy.account.order(orders)
 
-    def _run_tick_day(self, session: Any, price_dict: dict[str, float]) -> None:
+    def _run_tick_replay(self, session: Any, price_dict: dict[str, float]) -> None:
         codes = sorted(set(price_dict) | self._active_codes())
         events = []
         for dataset in ("market.trade", "market.quote"):
@@ -131,7 +136,6 @@ class FastBacktestEngine:
         events.sort(key=lambda event: (event.event_time or datetime.min.replace(tzinfo=session.open.tzinfo), getattr(event, "sequence", 0) or 0))
         clock = ReplayClock(session)
         replay_events(events, clock, self._adapter.feed_market_event)
-        self._adapter.flush_day(session.trading_date)
 
     def _settle_day(self, price_dict: dict[str, float]) -> None:
         self.entity.daily_settle(price_dict) if isinstance(self.entity, BaseStream) else (self.account.daily_summarize(price_dict), cast(BaseStrategy, self.entity).on_day_end())
@@ -181,13 +185,6 @@ class FastBacktestEngine:
         if isinstance(value, SlippageModel): return value
         if isinstance(value, Mapping): return SlippageModel(buy_slippage=value.get("buy", 0.001), sell_slippage=value.get("sell", 0.001), model=cast(Literal["none", "proportional", "fixed"], value.get("model", "proportional")))
         return SlippageModel(model="none")
-
-    def _apply_slippage(self, requests: list[ExecutionRequest]) -> list[ExecutionRequest]:
-        return [replace(request, price=self.slippage.apply(request.price, cast(Literal["BUY", "SELL"], request.action))) if request.price > 0 else request for request in requests]
-
-    def _price_priceless_fast_requests(self, prices: Mapping[str, float]) -> None:
-        for strategy in self._strategies:
-            strategy._pending_orders = [replace(request, price=self.slippage.apply(prices[request.code], cast(Literal["BUY", "SELL"], request.action))) if request.price <= 0 and prices.get(request.code, 0) > 0 else request for request in strategy._pending_orders]
 
 
 __all__ = ["FastBacktestEngine"]
