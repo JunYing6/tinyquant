@@ -117,9 +117,14 @@ class ExecutionRequest:
     order_type: str | None = None
     reason: str = ""
     mode: ExecutionMode | None = None
+    timing: str | None = None
 
     def __post_init__(self) -> None:
         _validate_action(self.action)
+        if self.timing is not None and self.timing not in {
+            "market", "limit", "next_bar_open", "next_bar_close",
+        }:
+            raise ValueError("timing must be market/limit/next_bar_open/next_bar_close")
         if self.mode is not None:
             if self.mode == ExecutionMode.LIMIT:
                 _validate_finite_number("price", self.price)
@@ -129,6 +134,11 @@ class ExecutionRequest:
                 _validate_finite_number("price", self.price)
                 if self.price < 0:
                     raise ValueError("non-limit mode price must be non-negative")
+        elif self.timing in {"market", "next_bar_open", "next_bar_close"}:
+            # 撮合价由撮合器在事件到达时决定，允许 price=0
+            _validate_finite_number("price", self.price)
+            if self.price < 0:
+                raise ValueError("price must be non-negative")
         else:
             _validate_finite_number("price", self.price)
             if self.price <= 0:
