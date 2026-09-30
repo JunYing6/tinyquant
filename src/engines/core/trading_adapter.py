@@ -81,21 +81,25 @@ class TradingContractAdapter:
             if hasattr(self.entity, "on_quote"):
                 self.entity.on_quote(event)
         for strategy in self.strategies:
-            if strategy.strategy_name in self._skip_names or strategy.tick_matcher is None:
-                continue
-            if hasattr(strategy.tick_matcher, "match_event"):
-                matches = strategy.tick_matcher.match_event(event, self._current_date)
-            else:
-                matches = strategy.tick_matcher.match({"code": event.instrument_id, "time": event.event_time, "price": getattr(event, "price", None)}, self._current_date)
-            for order in matches:
-                strategy.handle_order_event(
-                    {
-                        "order_id": order.order_id,
-                        "status": order.status,
-                        "requested_volume": order.volume,
-                        "filled_volume": order.filled_volume,
-                    }
-                )
+            if strategy.strategy_name not in self._skip_names:
+                self._match_strategy(strategy, event)
+
+    def _match_strategy(self, strategy: Any, event: MarketEvent | Mapping[str, Any]) -> None:
+        if strategy.tick_matcher is None:
+            return
+        if hasattr(strategy.tick_matcher, "match_event"):
+            matches = strategy.tick_matcher.match_event(event, self._current_date)
+        else:
+            matches = strategy.tick_matcher.match({"code": event.instrument_id, "time": event.event_time, "price": getattr(event, "price", None)}, self._current_date)
+        for order in matches:
+            strategy.handle_order_event(
+                {
+                    "order_id": order.order_id,
+                    "status": order.status,
+                    "requested_volume": order.volume,
+                    "filled_volume": order.filled_volume,
+                }
+            )
 
     def feed_execution_tick(self, tick: Mapping[str, Any]) -> None:
         self._current_date = self._tick_date(tick) or self._current_date
@@ -111,7 +115,8 @@ class TradingContractAdapter:
             if strategy.strategy_name in self._skip_names:
                 continue
             if bar.frequency in strategy.timer.kline_frequencies:
-                strategy.on_kline_bar(bar)
+                self._match_strategy(strategy, bar)  # 先撮合（推进seq、成交上根bar订单）
+                strategy.on_kline_bar(bar)           # 再喂信号（提交下根bar订单）
                 matched = True
         if not matched:
             raise ValueError(f"unsubscribed completed frequency: {bar.frequency}")
@@ -125,6 +130,9 @@ class TradingContractAdapter:
         if not isinstance(bar, Bar) or bar.frequency != "1d":
             raise ValueError("daily source must be a 1d Bar")
         self._current_date = self._date_key(bar.interval_end)
+        for strategy in self.strategies:
+            if strategy.strategy_name not in self._skip_names:
+                self._match_strategy(strategy, bar)  # 先撮合
         for (name, frequency), aggregator in self._aggregators.items():
             if name not in self._skip_names and frequency.endswith("d"):
                 aggregator.feed_daily(bar)
