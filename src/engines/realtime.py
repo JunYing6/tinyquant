@@ -80,6 +80,7 @@ class RealTimeTradeEngine:
         self._signal_thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._kline_pending: list[Any] = []
+        self._active_pool: set[str] | None = None
 
     def start(self) -> None:
         with self._lock:
@@ -147,6 +148,14 @@ class RealTimeTradeEngine:
             self._subscriptions[dataset] = self.data_gateway.subscribe(
                 request, self._on_stream_event, control_sink=self._on_control_event
             )
+        self._active_pool = set(codes)
+        for strategy in self._strategies():
+            strategy.timer.set_pool_change_callback(self._on_pool_change)
+
+    def _on_pool_change(self, pool: list[str]) -> None:
+        """因子日内 drop 所需代码后：收窄活动池，引擎跳过已不需要的标的。"""
+        with self._lock:
+            self._active_pool = set(pool)
 
     def _on_stream_event(self, event: TradeTick | QuoteTick) -> None:
         with self._lock:
@@ -154,6 +163,8 @@ class RealTimeTradeEngine:
                 return
             if self._clock is None or event.event_time is None:
                 return
+            if self._active_pool is not None and event.instrument_id not in self._active_pool:
+                return  # 因子已 drop：该标的后续事件不再处理
             try:
                 self._maybe_roll_day(event.trading_date)
                 if not self._in_phase(event):

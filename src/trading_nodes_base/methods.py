@@ -635,11 +635,25 @@ class BaseTimeSelection(BaseComponent):
         required: Set[str] = set()
         # 分发：聚合各因子声明的数据需求，得到订阅池，并给每个因子设过滤目标
         for factor in self.all_factors:
+            factor.set_needs_callback(self.on_factor_needs_change)
             codes = factor.required_codes(pool_arg, positions, account_info)
             factor._set_target_codes(codes)
             required.update(codes)
+        # 覆盖 set_needed 声明的默认需求（若无自定义 declared 则回退到聚合池）
         self.data_required_pool = sorted(required)
         self._daily_logic()
+
+    def set_pool_change_callback(self, callback: Optional[Any]) -> None:
+        self._on_pool_change = callback
+
+    def on_factor_needs_change(self, factor: Any) -> None:
+        """因子日内缩减所需代码（drop_required_codes）后重聚合订阅池并通知引擎。"""
+        required: Set[str] = set()
+        for fact in self.all_factors:
+            required.update(fact.required_codes())
+        self.data_required_pool = sorted(required)
+        if getattr(self, "_on_pool_change", None) is not None:
+            self._on_pool_change(self.data_required_pool)
 
     def kline_bar_input(self, bar: KlineBar) -> List[SignalIntent]:
         if not isinstance(bar, KlineBar):

@@ -359,6 +359,30 @@ class StreamFactor(BaseFactor):
         super().__init__(factor_name, params)
         self._target_codes: Set[str] = set()
         self._targets_configured = False
+        self._needed: Set[str] = set()
+        self._on_needs_change: Optional[Any] = None
+
+    def set_needs_callback(self, callback: Optional[Any]) -> None:
+        self._on_needs_change = callback
+
+    def set_needed(self, codes: Optional[Sequence[str]]) -> None:
+        self._needed = set(codes or ())
+        self._target_codes = set(self._needed)
+        self._targets_configured = bool(self._needed)
+        self._notify_needs_change()
+
+    def drop_required_codes(self, code: str) -> None:
+        if code not in self._needed:
+            return
+        self._needed.discard(code)
+        self._target_codes.discard(code)
+        if not self._target_codes:
+            self._targets_configured = False
+        self._notify_needs_change()
+
+    def _notify_needs_change(self) -> None:
+        if self._on_needs_change is not None:
+            self._on_needs_change(self)
 
     def required_codes(
         self,
@@ -369,11 +393,10 @@ class StreamFactor(BaseFactor):
     ) -> List[str]:
         """数据需求声明钩子：返回本因子需要获取 tick/K 线数据的代码集合。
 
-        基类默认返回 ``[]``（不声明任何数据需求）；子类覆写该方法，按自身
-        逻辑声明所需代码。择时器在上方聚合各因子的声明，统一决定数据订阅池
-        （分发逻辑由择时器负责，因子只管声明，不参与分发）。
+        基类默认返回 ``set_needed`` 声明的代码（未声明则返回 []）；子类可覆写。
+        因子可通过 ``drop_required_codes`` 在日内缩减自身需求，择时器据此重聚合。
         """
-        return []
+        return list(self._needed)
 
     def is_target_code(self, code: str) -> bool:
         return not self._targets_configured or code in self._target_codes
