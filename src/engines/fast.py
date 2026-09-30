@@ -96,16 +96,28 @@ class FastBacktestEngine:
             raise DataContractError(f"{batch.dataset} batch must be complete and fully consumed (request_id={batch.request_id})", dataset=batch.dataset, request_id=batch.request_id)
         bars = [record for record in batch.records if isinstance(record, Bar)]
         price_dict = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
+        active = self._day_feed_codes()
         # 统一事件流：先喂每日 bar（撮合 + K线信号），再视策略需要补 tick
         for bar in bars:
+            if active and bar.instrument_id and bar.instrument_id not in active:
+                continue  # 因子已 drop：跳过该标的数据（流式提速）
             self._adapter.feed_daily_bar(bar)
         if any(strategy.timer.tick_factors for strategy in self._strategies):
-            self._run_tick_replay(session, price_dict)
+            self._run_tick_replay(session, price_dict, active)
         # 直接订单（策略 _pending_orders，price=0 的 MARKET 单）按当日收盘价+滑点成交
         self._execute_pending_daily(price_dict)
         self._adapter.flush_day(session.trading_date)
         self._settle_day(price_dict)
         self._record_day(date_key, price_dict)
+
+    def _day_feed_codes(self) -> set[str]:
+        """各策略 data_required_pool 的并集；空集表示不作限定（喂全部代码）。"""
+        pools: list[str] = []
+        for strategy in self._strategies:
+            pool = getattr(strategy.timer, "data_required_pool", None)
+            if pool:
+                pools.extend(pool)
+        return set(pools)
 
     def _execute_pending_daily(self, price_dict: dict[str, float]) -> None:
         for strategy in self._strategies:
@@ -125,7 +137,7 @@ class FastBacktestEngine:
             if orders:
                 strategy.account.order(orders)
 
-    def _run_tick_replay(self, session: Any, price_dict: dict[str, float]) -> None:
+    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], active: set[str] | None = None) -> None:
         codes = sorted(set(price_dict) | self._active_codes())
         events = []
         for dataset in ("market.trade", "market.quote"):
@@ -133,6 +145,8 @@ class FastBacktestEngine:
             if not batch.complete or batch.next_cursor is not None:
                 raise DataContractError(f"{dataset} batch must be complete and fully consumed")
             events.extend(batch.records)
+        if active:
+            events = [event for event in events if getattr(event, "instrument_id", None) in active]
         events.sort(key=lambda event: (event.event_time or datetime.min.replace(tzinfo=session.open.tzinfo), getattr(event, "sequence", 0) or 0))
         clock = ReplayClock(session)
         replay_events(events, clock, self._adapter.feed_market_event)
