@@ -101,6 +101,7 @@ class BaseStrategy:
         self._pending_orders: List[ExecutionRequest] = []
         self._inflight_orders: Dict[Any, List[_InflightOrder]] = {}
         self._target_weights: Dict[str, float] = {}
+        self._last_prices: Dict[str, float] = {}
         self.order_events: List[dict[str, Any]] = []
         self.tick_matcher: Any = None
         self._original_buy_targets: Dict[str, int] = {}
@@ -271,6 +272,8 @@ class BaseStrategy:
     def on_kline_bar(self, bar: KlineBar) -> List[SignalIntent]:
         if self.risk_ctrl is not None:
             self._apply_risk_decision(self.risk_ctrl.on_bar(bar))
+        if isinstance(bar, KlineBar):
+            self._last_prices[bar.code] = float(bar.close)
         intents = self.timer.kline_bar_input(bar)
         if self.tick_matcher is not None:
             # 统一撮合：K线意图直接转成 next_bar_* 订单提交给撮合器
@@ -283,12 +286,24 @@ class BaseStrategy:
         timing_map = {"open": "next_bar_open", "close": "next_bar_close"}
         requests: List[ExecutionRequest] = []
         for intent in intents:
-            timing = timing_map.get(intent.execution_timing or self.execution_timing, "next_bar_open")
             metadata = dict(intent.metadata)
+            volume = metadata.get("volume")
+            sizing = metadata.get("sizing_intent")
+            if volume is None and sizing is not None:
+                if intent.action == "BUY":
+                    volume = self._buy_position_volume(
+                        self._last_prices.get(intent.code, 0.0), float(sizing)
+                    )
+                else:
+                    held = int(self.current_positions.get(intent.code, 0))
+                    volume = self._sell_position_volume(held, float(sizing))
+            if volume is None or volume <= 0:
+                continue
+            timing = timing_map.get(intent.execution_timing or self.execution_timing, "next_bar_open")
             requests.append(ExecutionRequest(
                 code=intent.code, action=intent.action, time=intent.trigger_time,
-                volume=metadata.get("volume"), sizing_intent=metadata.get("sizing_intent"),
-                order_type=metadata.get("order_type"), reason=intent.reason, timing=timing,
+                volume=int(volume), order_type=metadata.get("order_type"),
+                reason=intent.reason, timing=timing,
             ))
         self.tick_matcher.submit_requests(requests, self._current_date)
         consumed = {id(intent) for intent in intents}

@@ -143,6 +143,31 @@ class NextBarFastStrategy(BaseStrategy):
         super().__init__("next-bar", timer=BaseTimeSelection("next-bar-timer", [NextBarBuyFactor()], [PassiveIntentExecutor()]))
 
 
+class SizingBarFactor(KlineTimingFactor):
+    emitted_actions = frozenset({"BUY"})
+
+    def __init__(self) -> None:
+        super().__init__("sizing-bar-buy")
+        self.emitted = False
+
+    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
+        self._data_clear()
+        return []
+
+    def on_bar(self, bar: KlineBar) -> list[SignalIntent]:
+        if self.emitted:
+            return []
+        self.emitted = True
+        return [SignalIntent(bar.code, "BUY", bar.end_time, "sizing entry", {"sizing_intent": 1.0})]
+
+
+class SizingFastStrategy(BaseStrategy):
+    supports_fast_backtest = True
+
+    def __init__(self) -> None:
+        super().__init__("sizing", timer=BaseTimeSelection("sizing-timer", [SizingBarFactor()], [PassiveIntentExecutor()]))
+
+
 class EqualMind(BaseMind):
     def calculate_weights(self, market_data: dict[str, Any], strategies_performance: dict[str, dict[str, float]]) -> dict[str, float]:
         return {name: 1.0 for name in strategies_performance}
@@ -195,6 +220,16 @@ def test_fast_backtest_executes_kline_intent_on_next_daily_bar() -> None:
 
     assert engine.account.positions == {"000001.SZ": 100}
     assert engine.account.cost_prices["000001.SZ"] == 11.0
+
+
+def test_fast_backtest_executes_sizing_intent_kline_intent() -> None:
+    engine = FastBacktestEngine(SizingFastStrategy(), "20240102", "20240103", initial_capital=100_000, mode="fast", data_gateway=_gateway(BARS), progress_bar=False)
+
+    engine.run()
+
+    # sizing_intent=1.0 -> 权益100000 / 信号bar收盘10 = 10000 股，下根bar close(11) 成交
+    # 但账户余额 100000 在 11.0 价只能买 9000（余额限制）
+    assert engine.account.positions["000001.SZ"] == 9000
 
 
 def test_tick_backtest_replays_trade_events_through_matching_runtime() -> None:
