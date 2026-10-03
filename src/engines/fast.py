@@ -89,7 +89,8 @@ class FastBacktestEngine:
         if isinstance(self.entity, BaseStream):
             self.entity.on_daily({})
         try:
-            batch = self.data_gateway.read(DataRequest(dataset="market.bar", start=session.open, end=session.close, fields=("open", "high", "low", "close", "volume", "turnover"), frequency="1d", price_basis="raw"))
+            codes = sorted(self._active_codes())
+            batch = self.data_gateway.read(DataRequest(dataset="market.bar", instruments=tuple(codes) if codes else None, start=session.open, end=session.close, fields=("open", "high", "low", "close", "volume", "turnover"), frequency="1d", price_basis="raw"))
         except Exception as error:
             raise DataProviderError(f"market.bar read failed on {date_key}: {error}") from error
         if not batch.complete or batch.next_cursor is not None:
