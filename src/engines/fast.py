@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from tools.data.errors import DataContractError
 from typing import Any, Literal, Mapping, cast
@@ -128,6 +128,17 @@ class FastBacktestEngine:
                 pools.extend(pool)
         return set(pools)
 
+    @staticmethod
+    def _time_slices(start: Any, end: Any, minutes: int = 30) -> list[tuple[Any, Any]]:
+        slices: list[tuple[Any, Any]] = []
+        cur = start
+        delta = timedelta(minutes=minutes)
+        while cur < end:
+            nxt = min(cur + delta, end)
+            slices.append((cur, nxt))
+            cur = nxt
+        return slices
+
     def _execute_pending_daily(self, price_dict: dict[str, float]) -> None:
         for strategy in self._strategies:
             if not strategy._pending_orders:
@@ -146,19 +157,25 @@ class FastBacktestEngine:
             if orders:
                 strategy.account.order(orders)
 
-    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], active: set[str] | None = None) -> None:
-        codes = sorted(set(price_dict) | self._active_codes())
-        events = []
-        for dataset in ("market.trade", "market.quote"):
-            batch = self.data_gateway.read(DataRequest(dataset=dataset, instruments=tuple(codes), start=session.open, end=session.close))
-            if not batch.complete or batch.next_cursor is not None:
-                raise DataContractError(f"{dataset} batch must be complete and fully consumed")
-            events.extend(batch.records)
-        if active:
-            events = [event for event in events if getattr(event, "instrument_id", None) in active]
-        events.sort(key=lambda event: (event.event_time or datetime.min.replace(tzinfo=session.open.tzinfo), getattr(event, "sequence", 0) or 0))
-        clock = ReplayClock(session)
-        replay_events(events, clock, self._adapter.feed_market_event)
+    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], active: set[str] | None = None, slice_minutes: int = 30) -> None:
+        base = set(price_dict) | self._active_codes()
+        for start, end in self._time_slices(session.open, session.close, slice_minutes):
+            # 每片前重算活动池：因子 drop 掉的代码，本片起不再拉取
+            pool = set(self._day_feed_codes())
+            codes = sorted((pool & base) if pool else base)
+            if active:
+                codes = [c for c in codes if c in active]
+            if not codes:
+                continue
+            events = []
+            for dataset in ("market.trade", "market.quote"):
+                batch = self.data_gateway.read(DataRequest(dataset=dataset, instruments=tuple(codes), start=start, end=end))
+                if not batch.complete or batch.next_cursor is not None:
+                    raise DataContractError(f"{dataset} batch must be complete and fully consumed")
+                events.extend(batch.records)
+            events.sort(key=lambda event: (event.event_time or datetime.min.replace(tzinfo=session.open.tzinfo), getattr(event, "sequence", 0) or 0))
+            clock = ReplayClock(session)
+            replay_events(events, clock, self._adapter.feed_market_event)
 
     def _settle_day(self, price_dict: dict[str, float]) -> None:
         self.entity.daily_settle(price_dict) if isinstance(self.entity, BaseStream) else (self.account.daily_summarize(price_dict), cast(BaseStrategy, self.entity).on_day_end())
