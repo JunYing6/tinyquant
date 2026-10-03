@@ -104,11 +104,18 @@ class FastBacktestEngine:
             if active and bar.instrument_id and bar.instrument_id not in active:
                 continue  # 因子已 drop：跳过该标的数据（流式提速）
             self._adapter.feed_daily_bar(bar)
-        if any(strategy.timer.tick_factors for strategy in self._strategies):
+        ticked = False
+        if any(getattr(factor, "execution_role", "") != "intent_executor" for strategy in self._strategies for factor in strategy.timer.tick_factors):
             self._run_tick_replay(session, price_dict, active)
+            ticked = True
         # 直接订单（策略 _pending_orders，price=0 的 MARKET 单）按当日收盘价+滑点成交
         self._execute_pending_daily(price_dict)
-        self._adapter.flush_day(session.trading_date)
+        if ticked:
+            self._adapter.flush_day(session.trading_date)
+        else:
+            for strategy in self._strategies:
+                if strategy.tick_matcher is not None:
+                    strategy.tick_matcher.expire_day(session.trading_date)
         self._settle_day(price_dict)
         self._record_day(date_key, price_dict)
 
