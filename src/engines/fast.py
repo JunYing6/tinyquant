@@ -89,7 +89,8 @@ class FastBacktestEngine:
         if isinstance(self.entity, BaseStream):
             self.entity.on_daily({})
         try:
-            codes = sorted(self._active_codes())
+            # 读数范围 = 因子声明池(含池外基准/相关股) ∪ 持仓/股票池，缺一则回退全量
+            codes = sorted(set(self._day_feed_codes()) | self._active_codes())
             batch = self.data_gateway.read(DataRequest(dataset="market.bar", instruments=tuple(codes) if codes else None, start=session.open, end=session.close, fields=("open", "high", "low", "close", "volume", "turnover"), frequency="1d", price_basis="raw"))
         except Exception as error:
             raise DataProviderError(f"market.bar read failed on {date_key}: {error}") from error
