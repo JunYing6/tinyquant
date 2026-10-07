@@ -275,37 +275,50 @@ class BaseStrategy:
         if isinstance(bar, KlineBar):
             self._last_prices[bar.code] = float(bar.close)
         intents = self.timer.kline_bar_input(bar)
-        if self.tick_matcher is not None:
-            # 统一撮合：K线意图直接转成 next_bar_* 订单提交给撮合器
-            self._submit_kline_intents(intents)
+        if intents:
+            self._materialize_kline_orders(intents, bar)
         return intents
 
-    def _submit_kline_intents(self, intents: List[SignalIntent]) -> None:
-        if not intents:
-            return
+    def _materialize_kline_orders(self, intents: List[SignalIntent], bar: KlineBar) -> None:
+        """K线意图 → 真实订单：择时器定仓（sizing）→ 策略乘风控比例 → 数量 → 订单。
+
+        订单以 ``next_bar_*`` 时机写入 ``_pending_orders``，由引擎在全日
+        bar 回放后交撮合器成交（与 tick 路径同一模型：策略产出订单，引擎只成交）。
+        """
         timing_map = {"open": "next_bar_open", "close": "next_bar_close"}
-        requests: List[ExecutionRequest] = []
+        ratio = self.risk_ctrl.target_position_ratio if self.risk_ctrl is not None else 1.0
+        price = float(bar.close)
         for intent in intents:
-            metadata = dict(intent.metadata)
-            volume = metadata.get("volume")
-            sizing = metadata.get("sizing_intent")
-            if volume is None and sizing is not None:
+            sized = self.timer.convert_intents([intent], price)  # 择时器定仓
+            if not sized:
+                continue
+            order = sized[0]
+            if order.volume is not None and order.volume > 0:
+                # 显式数量：乘风控比例
+                volume = (
+                    self._buy_lot_round(order.volume * ratio)
+                    if intent.action == "BUY"
+                    else int(order.volume * ratio)
+                )
+            elif order.sizing_intent is not None:
+                # 仓位比例：乘风控比例后按账户权益/持仓换算
+                sizing = float(order.sizing_intent)
                 if intent.action == "BUY":
-                    volume = self._buy_position_volume(
-                        self._last_prices.get(intent.code, 0.0), float(sizing)
-                    )
+                    volume = self._buy_position_volume(price, sizing * ratio)
                 else:
                     held = int(self.current_positions.get(intent.code, 0))
-                    volume = self._sell_position_volume(held, float(sizing))
-            if volume is None or volume <= 0:
+                    volume = self._sell_position_volume(held, min(sizing * ratio, 1.0))
+            else:
                 continue
-            timing = timing_map.get(intent.execution_timing or self.execution_timing, "next_bar_open")
-            requests.append(ExecutionRequest(
+            if volume <= 0:
+                continue
+            timing = timing_map.get(
+                intent.execution_timing or self.execution_timing, "next_bar_open"
+            )
+            self._pending_orders.append(ExecutionRequest(
                 code=intent.code, action=intent.action, time=intent.trigger_time,
-                volume=int(volume), order_type=metadata.get("order_type"),
-                reason=intent.reason, timing=timing,
+                price=price, volume=int(volume), timing=timing, reason=intent.reason,
             ))
-        self.tick_matcher.submit_requests(requests, self._current_date)
         consumed = {id(intent) for intent in intents}
         self.timer.pending_intents = [
             intent for intent in self.timer.pending_intents if id(intent) not in consumed

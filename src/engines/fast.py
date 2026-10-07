@@ -104,6 +104,8 @@ class FastBacktestEngine:
             if active and bar.instrument_id and bar.instrument_id not in active:
                 continue  # 因子已 drop：跳过该标的数据（流式提速）
             self._adapter.feed_daily_bar(bar)
+            for strategy in self._strategies:
+                self._submit_next_bar_orders(strategy)
         ticked = False
         if any(getattr(factor, "execution_role", "") != "intent_executor" for strategy in self._strategies for factor in strategy.timer.tick_factors):
             self._run_tick_replay(session, price_dict, active)
@@ -138,6 +140,22 @@ class FastBacktestEngine:
             slices.append((cur, nxt))
             cur = nxt
         return slices
+
+    def _submit_next_bar_orders(self, strategy: BaseStrategy) -> None:
+        """把策略产出的 next_bar_* 订单提交给统一撮合器。
+
+        订单已由策略侧完成「择时器定仓 + 风控缩放 → 真实数量」，引擎只负责
+        提交成交（与 tick 路径同一模型）。
+        """
+        if strategy.tick_matcher is None:
+            return
+        next_bar = [r for r in strategy._pending_orders if (r.timing or "").startswith("next_bar")]
+        if not next_bar:
+            return
+        strategy._pending_orders = [
+            r for r in strategy._pending_orders if not (r.timing or "").startswith("next_bar")
+        ]
+        strategy.tick_matcher.submit_requests(next_bar, strategy._current_date)
 
     def _execute_pending_daily(self, price_dict: dict[str, float]) -> None:
         for strategy in self._strategies:
