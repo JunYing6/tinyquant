@@ -146,18 +146,17 @@ class DirectLiveBuyFactor(TickTimingFactor):
 
     def on_tick(
         self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()
-    ) -> list[ExecutionRequest]:
+    ) -> list[SignalIntent]:
         if self.fired:
             return []
         self.fired = True
         return [
-            ExecutionRequest(
+            SignalIntent(
                 tick["code"],
                 "BUY",
                 tick["time"],
-                price=tick["price"],
-                volume=100,
-                mode=ExecutionMode.MARKET,
+                "live-buy",
+                {"volume": 100},
             )
         ]
 

@@ -561,7 +561,8 @@ class BaseTimeSelection(BaseComponent):
         self.positions: Dict[str, Any] = {}
         self.current_time: Optional[str] = None
         self.account_info: Optional[Dict[str, Any]] = None
-        self.default_buy_sizing: float = 0.1
+        self.default_buy_sizing: float = 1.0
+        self._emitted_today: set[tuple[str, str]] = set()
 
     def _validate_governed_factors(self) -> None:
         if not all(isinstance(f, KlineTimingFactor) for f in self.kline_factors):
@@ -569,13 +570,8 @@ class BaseTimeSelection(BaseComponent):
         if not all(isinstance(f, TickTimingFactor) for f in self.tick_factors):
             raise TypeError("tick_factors must contain TickTimingFactor instances")
         emitted = set().union(*(f.emitted_actions for f in self.kline_factors)) if self.kline_factors else set()
-        accepted = set().union(*(f.accepted_intent_actions for f in self.tick_factors))
-        # 纯 K 线策略（无 tick 因子）由引擎按下一根 K 线撮合，跳过意图覆盖校验
-        missing = emitted - accepted if self.tick_factors else set()
-        if missing:
-            raise ValueError(f"missing Tick execution coverage for actions: {sorted(missing)}")
         self.emitted_actions = frozenset(emitted)
-        self.accepted_intent_actions = frozenset(accepted)
+        self.accepted_intent_actions = frozenset()
 
     @property
     def kline_frequencies(self) -> List[str]:
@@ -631,6 +627,7 @@ class BaseTimeSelection(BaseComponent):
         self.set_stock_pool(pool)
         self.account_info = account_info
         self._extra_data = extra_data
+        self._emitted_today = set()
         pool_arg = list(self.stock_pool) if filter_codes else None
         required: Set[str] = set()
         # 分发：聚合各因子声明的数据需求，得到订阅池，并给每个因子设过滤目标
@@ -672,26 +669,46 @@ class BaseTimeSelection(BaseComponent):
         self.current_time = tick.get("time")
         if not code:
             return []
-        remaining = list(self.pending_intents)
         requests: List[ExecutionRequest] = []
         for factor in self.tick_factors:
             if not factor.in_window(self.current_time):
                 continue
-            matching = [item for item in remaining if item.code == code and item.action in factor.accepted_intent_actions]
-            if not matching and not factor.is_target_code(code):
+            if not factor.is_target_code(code):
                 continue
-            outputs = self._validate_factor_output(factor, factor.on_tick(tick, tuple(matching)), ExecutionRequest)
-            requests.extend(self._apply_sizing(outputs, matching))
-            available_intents = list(matching)
-            for request in outputs:
-                for index, intent in enumerate(available_intents):
-                    if request.code == intent.code and request.action == intent.action:
-                        available_intents.pop(index)
-                        if intent in remaining:
-                            remaining.remove(intent)
-                        break
-        self.pending_intents = remaining
+            context = [item for item in self.pending_intents if item.code == code]
+            outputs = self._validate_factor_output(factor, factor.on_tick(tick, tuple(context)), SignalIntent)
+            if outputs:
+                requests.extend(self.convert_intents(outputs, tick.get("price")))
         return requests
+
+    def convert_intents(
+        self, intents: List[SignalIntent], price: Optional[float] = None
+    ) -> List[ExecutionRequest]:
+        """统一意图→订单转换器：把 SignalIntent 转成带仓位的 ExecutionRequest。
+
+        因子只发裸信号；仓位由 ``_apply_sizing`` 按目标池计算。tick 因子新发的
+        意图经此同 tick 即时转换执行；K 线意图由策略经下根 bar 提交。
+        """
+        if not intents:
+            return []
+        bare: List[ExecutionRequest] = []
+        for intent in intents:
+            if not isinstance(intent, SignalIntent):
+                raise TypeError(f"convert_intents expected SignalIntent, got {type(intent).__name__}")
+            metadata = dict(intent.metadata)
+            volume = metadata.get("volume")
+            sizing = metadata.get("sizing_intent")
+            if volume is not None and volume <= 0:
+                continue
+            if sizing is not None and sizing <= 0:
+                continue
+            bare.append(ExecutionRequest(
+                code=intent.code, action=intent.action, time=intent.trigger_time,
+                price=float(price or 0.0),
+                volume=volume, sizing_intent=sizing,
+                order_type=metadata.get("order_type"), reason=intent.reason,
+            ))
+        return self._apply_sizing(bare, intents)
 
     def _apply_sizing(
         self, requests: List[ExecutionRequest], intents: List[SignalIntent]
@@ -699,7 +716,13 @@ class BaseTimeSelection(BaseComponent):
         """Sizing hook: called automatically when a Timing factor triggers
         execution requests.  Timing factors may emit bare signals; the timer
         computes the position quantity here.  Subclasses override this method
-        to apply their own sizing rules."""
+        to apply their own sizing rules.
+
+        基类默认边界干预（子类不符合可整体覆写），仅作用于裸信号：
+        - 同一 (code, action) 一天只发一次（因子重复信号去重）
+        - 无持仓不发 SELL；已持仓不发裸 BUY（避免重复买入）
+        - 显式数量（volume/sizing_intent）一律透传，不做干预
+        """
         if not requests:
             return requests
         default_weight = 1.0 / max(len(self.selector_pool), 1)
@@ -707,6 +730,13 @@ class BaseTimeSelection(BaseComponent):
         for request in requests:
             if request.volume is not None or request.sizing_intent is not None:
                 sized.append(request)
+                continue
+            key = (request.code, request.action)
+            if key in self._emitted_today:
+                continue
+            if request.action == "SELL" and not self._is_holding(request.code):
+                continue
+            if request.action == "BUY" and self._is_holding(request.code):
                 continue
             sizing = self._sizing_from_intent(request, intents)
             if sizing is None:
@@ -719,6 +749,7 @@ class BaseTimeSelection(BaseComponent):
             if sizing <= 0:
                 continue
             sized.append(replace(request, sizing_intent=sizing))
+            self._emitted_today.add(key)
         return sized
 
     @staticmethod
@@ -738,6 +769,20 @@ class BaseTimeSelection(BaseComponent):
         if self.selector_pool and code in self.selector_pool:
             return 1.0 / len(self.selector_pool)
         return default
+
+    def _is_holding(self, code: str) -> bool:
+        position = self.positions.get(code)
+        if position is None:
+            return False
+        if isinstance(position, dict):
+            try:
+                return int(position.get("volume", 0)) > 0
+            except (TypeError, ValueError):
+                return bool(position.get("volume"))
+        try:
+            return int(position) > 0
+        except (TypeError, ValueError):
+            return bool(position)
 
     @staticmethod
     def _validate_factor_output(factor: BaseFactor, output: Any, expected_type: type) -> List[Any]:

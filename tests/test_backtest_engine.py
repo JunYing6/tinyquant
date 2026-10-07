@@ -50,7 +50,6 @@ class PassiveKlineFactor(KlineTimingFactor):
 
 class PassiveIntentExecutor(TickTimingFactor):
     execution_role = "intent_executor"
-    accepted_intent_actions = frozenset({"BUY"})
 
     def __init__(self) -> None:
         super().__init__("passive-executor")
@@ -86,11 +85,11 @@ class DirectBuyTickFactor(TickTimingFactor):
         self._data_clear()
         return []
 
-    def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[ExecutionRequest]:
+    def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[SignalIntent]:
         if self.fired:
             return []
         self.fired = True
-        return [ExecutionRequest(tick["code"], "BUY", tick["time"], price=tick["price"], volume=100, mode=ExecutionMode.MARKET)]
+        return [SignalIntent(tick["code"], "BUY", tick["time"], "direct-buy", {"volume": 100})]
 
 
 class TickStrategy(BaseStrategy):
@@ -107,7 +106,7 @@ class SequenceRecordingFactor(TickTimingFactor):
         self._data_clear()
         return []
 
-    def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[ExecutionRequest]:
+    def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[SignalIntent]:
         self.prices.append(tick["price"])
         return []
 

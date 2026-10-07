@@ -212,7 +212,6 @@ class HistoryClearingKlineFactor(KlineTimingFactor):
 
 
 class TickFactor(TickTimingFactor):
-    accepted_intent_actions = frozenset({"BUY"})
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
@@ -220,19 +219,18 @@ class TickFactor(TickTimingFactor):
 
     def on_tick(
         self, tick: dict, intents: Sequence[SignalIntent] = ()
-    ) -> list[ExecutionRequest]:
+    ) -> list[SignalIntent]:
         return [
-            ExecutionRequest(
+            SignalIntent(
                 code=tick["code"],
                 action="BUY",
-                time=tick["time"],
-                price=tick["price"],
+                trigger_time=tick["time"],
+                reason="tick",
             )
         ] if intents else []
 
 
 class DirectTickFactor(TickTimingFactor):
-    accepted_intent_actions = frozenset()
     action = "BUY"
     volume = 100
 
@@ -242,13 +240,13 @@ class DirectTickFactor(TickTimingFactor):
 
     def on_tick(
         self, tick: dict, intents: Sequence[SignalIntent] = ()
-    ) -> list[ExecutionRequest]:
-        return [ExecutionRequest(
+    ) -> list[SignalIntent]:
+        return [SignalIntent(
             code=tick["code"],
             action=self.action,
-            time=tick["time"],
-            price=tick["price"],
-            volume=self.volume,
+            trigger_time=tick["time"],
+            reason="direct",
+            metadata={"volume": self.volume},
         )]
 
 
@@ -466,10 +464,11 @@ def test_timer_routes_kline_intents_to_typed_tick_requests() -> None:
 
     assert isinstance(intents[0], SignalIntent)
     assert isinstance(requests[0], ExecutionRequest)
-    assert timer.pending_intents == []
+    # kline 意图保留在 pending（由策略提交），tick 新信号即时转换，不消费 pending
+    assert len(timer.pending_intents) == 1
 
 
-def test_timer_consumes_only_intents_matched_by_emitted_requests() -> None:
+def test_timer_does_not_consume_pending_on_tick_signals() -> None:
     timer = BaseTimeSelection("intent-timer", [], [TickFactor("tick")])
     timer.pending_intents = [
         SignalIntent("000001.SZ", "BUY", "09:30:00", "first"),
@@ -481,7 +480,24 @@ def test_timer_consumes_only_intents_matched_by_emitted_requests() -> None:
     )
 
     assert len(requests) == 1
-    assert [intent.reason for intent in timer.pending_intents] == ["second"]
+    assert [intent.reason for intent in timer.pending_intents] == ["first", "second"]
+
+
+def test_timer_drops_zero_sizing_tick_signal() -> None:
+    class ZeroTick(TickTimingFactor):
+        def get_query_lst(self, date, codes=None):
+            self._data_clear()
+            return []
+
+        def on_tick(self, tick, intents=()):
+            return [SignalIntent(tick["code"], "BUY", tick["time"], "zero", {"sizing_intent": 0})]
+
+    timer = BaseTimeSelection("sizing-timer", [], [ZeroTick("zero")])
+    requests = timer.tick_input(
+        {"code": "000001.SZ", "time": "09:31:00", "price": 10.0}
+    )
+
+    assert requests == []
 
 
 def test_unconfigured_tick_factor_accepts_target_code_by_default() -> None:

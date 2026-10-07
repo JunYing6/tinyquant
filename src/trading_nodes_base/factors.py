@@ -448,8 +448,7 @@ class KlineTimingFactor(StreamFactor):
 class TickTimingFactor(StreamFactor):
     _fixed_factor_kind = "timing_tick"
     factor_kind = "timing_tick"
-    output_schema = "execution_request"
-    accepted_intent_actions: frozenset[str] = frozenset()
+    output_schema = "signal_intent"
     tick_window: Optional[Tuple[str, str]] = None
     execution_role = "market_tick"
 
@@ -463,7 +462,7 @@ class TickTimingFactor(StreamFactor):
 
     def on_tick(
         self, tick: Dict[str, Any], intents: Sequence[SignalIntent] = ()
-    ) -> List[ExecutionRequest]:
+    ) -> List[SignalIntent]:
         return []
 
 
