@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
@@ -31,6 +32,7 @@ class BaseStream:
         }
         self.shadow_accounts: Dict[str, Any] = {}
         self.real_account: Any = None
+        self.real_matcher: Any = None
         self._skip_children: set[str] = set()
         self._current_date: Optional[datetime] = None
         self._live_order_executor: Optional[Callable[[List[tuple]], None]] = None
@@ -45,6 +47,32 @@ class BaseStream:
         """各子策略影子账户当前持仓的快照（用于日终净额镜像）。"""
         return {name: dict(account.positions) for name, account in self.shadow_accounts.items()}
 
+    def set_real_matcher(self, matcher: Any) -> None:
+        """挂接真实账户的撮合器（逐笔复刻用）。"""
+        self.real_matcher = matcher
+
+    def replicate_orders(self, strategy_name: str, requests: List[Any], trade_date: Any) -> None:
+        """把某子策略提交的订单逐笔复刻到真实账户：成交量 ×该子策略权重 → 整手。
+
+        行为复制：每笔订单原样送达真实撮合器按相同时机独立撮合；不按子策略账户做加权净额。
+        """
+        if self.real_matcher is None or not requests:
+            return
+        weight = self.mind.current_weights.get(strategy_name, 0.0)
+        if weight <= 0:
+            return
+        scaled: List[Any] = []
+        for request in requests:
+            volume = getattr(request, "volume", None)
+            if volume is None or volume <= 0:
+                continue
+            replicated = int(volume * weight) // 100 * 100
+            if replicated <= 0:
+                continue
+            scaled.append(replace(request, volume=replicated))
+        if scaled:
+            self.real_matcher.submit_requests(scaled, trade_date)
+
     @staticmethod
     def _new_shadow_account(account: Any, money: float) -> Any:
         account_type = type(account)
@@ -57,7 +85,8 @@ class BaseStream:
         self.real_account = account
         self.shadow_accounts.clear()
         self._prev_substrategy_equity.clear()
-        initial = account.total_equity / max(len(self.strategies), 1)
+        # 每个子策略按与真实账户相同的全额资金独立跑（"统一"口径）；复刻时再乘子策略权重。
+        initial = account.total_equity
         for name, strategy in self.strategies.items():
             shadow = self._new_shadow_account(account, initial)
             strategy.set_account(shadow)
@@ -129,6 +158,8 @@ class BaseStream:
         for name, strategy in self.strategies.items():
             if name not in self._skip_children:
                 strategy.on_tick(tick)
+        if self.real_matcher is not None:
+            return  # 逐笔复刻路径：订单已由转发器复制到 real_matcher，无需净值镜像
         orders = self._calc_net_orders(before, tick)
         if orders:
             self._submit_real_orders(orders)

@@ -1231,8 +1231,29 @@ def test_mind_validates_weights_and_stream_creates_shadow_accounts() -> None:
     assert mind._stream is stream
     assert set(stream.shadow_accounts) == {"first", "second"}
     assert all(isinstance(account, FakeAccount) for account in stream.shadow_accounts.values())
-    assert all(account.total_equity == 500.0 for account in stream.shadow_accounts.values())
+    # 每个子策略按与真实账户相同的全额资金独立跑（逐笔复刻时再乘权重）
+    assert all(account.total_equity == 1000.0 for account in stream.shadow_accounts.values())
     assert weights == {"first": 1.0, "second": 0.0}
+
+
+def test_stream_replicate_orders_scales_by_weight_and_lots() -> None:
+    strategy = Strategy("child", timer=Timer())
+    stream = Stream("replicate", [strategy], Mind())
+    stream.set_account(FakeAccount(1_000_000.0))
+    matcher = FakeMatcher()
+    stream.set_real_matcher(matcher)
+    stream.mind.current_weights = {"child": 0.5}
+
+    request = ExecutionRequest("000001.SZ", "BUY", "15:00:00", price=10.0, volume=1234)
+    stream.replicate_orders("child", [request], "20260930")
+
+    # int(1234 * 0.5) = 617 -> 整手 600；逐笔复刻，不按影子账户做加权净额
+    assert [[r.volume for r in submission] for submission in matcher.submissions] == [[600]]
+
+    stream.replicate_orders("child", [request], "20260930")
+    stream.mind.current_weights = {"child": 0.0}
+    stream.replicate_orders("child", [request], "20260930")
+    assert len(matcher.submissions) == 2  # 权重为 0 不再复刻
 
 
 def test_removed_factor_bases_are_not_importable() -> None:

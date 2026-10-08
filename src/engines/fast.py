@@ -22,6 +22,27 @@ _VALID_MODES = {"auto", "fast", "tick", "kline", "daily"}
 _VALID_TIMINGS = {"market", "limit", "next_bar_open", "next_bar_close"}
 
 
+class _MirrorMatcher:
+    """子策略撮合器转发器（组合流逐笔复刻）。
+
+    子策略提交的订单：原请求照常进影子撮合器（决定子策略自身成交/持仓），
+    同时把 ×子策略权重的副本逐笔交给真实账户撮合器，由它按相同时机独立成交。
+    """
+
+    def __init__(self, inner: MatchingEngine, stream: BaseStream, strategy_name: str) -> None:
+        self._inner = inner
+        self._stream = stream
+        self._strategy_name = strategy_name
+
+    def submit_requests(self, requests: list[Any], trade_date: Any) -> Any:
+        result = self._inner.submit_requests(requests, trade_date)
+        self._stream.replicate_orders(self._strategy_name, requests, trade_date)
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 class FastBacktestEngine:
     def __init__(self, entity: BaseStrategy | BaseStream, start_date: str, end_date: str,
                  initial_capital: float = 1_000_000, mode: str = "auto",
@@ -58,12 +79,20 @@ class FastBacktestEngine:
         self._adapter = TradingContractAdapter(entity)
         self._pipeline = UnifiedDataPipeline(entity, data_gateway, self._adapter)
         for strategy in self._strategies:
-            strategy.tick_matcher = MatchingEngine(
+            inner = MatchingEngine(
                 strategy.account.order, strategy.handle_order_event,
                 slippage=self.slippage.apply,
                 default_timing=self.execution_timing,
                 execution_delay=self.execution_delay,
             )
+            strategy.tick_matcher = _MirrorMatcher(inner, entity, strategy.strategy_name) if self.is_stream else inner
+        if self.is_stream:
+            entity.set_real_matcher(MatchingEngine(
+                self.account.order, None,
+                slippage=self.slippage.apply,
+                default_timing=self.execution_timing,
+                execution_delay=self.execution_delay,
+            ))
         self.trade_dates: list[str] = []
         self.equity_curve: list[dict[str, Any]] = []
         self.daily_positions: list[dict[str, Any]] = []
@@ -97,10 +126,8 @@ class FastBacktestEngine:
         self._pipeline.clock = clock
         date_key = session.trading_date.strftime("%Y%m%d")
         self._pipeline.run_daily(date_key)
-        stream_before = None
         if isinstance(self.entity, BaseStream):
             self.entity.on_daily({})
-            stream_before = self.entity.snapshot_positions()
         try:
             # 读数范围 = 因子声明池(含池外基准/相关股) ∪ 持仓/股票池，缺一则回退全量
             codes = sorted(set(self._day_feed_codes()) | self._active_codes())
@@ -129,9 +156,8 @@ class FastBacktestEngine:
             for strategy in self._strategies:
                 if strategy.tick_matcher is not None:
                     strategy.tick_matcher.expire_day(session.trading_date)
-        # 组合流：K 线路径下子策略订单由撮合器落在影子账户，日终把加权净额镜像到真实账户
-        if stream_before is not None and not ticked:
-            self.entity.execute_daily(price_dict, before=stream_before)
+            if self.is_stream and self.entity.real_matcher is not None:
+                self.entity.real_matcher.expire_day(session.trading_date)
         self._settle_day(price_dict)
         self._record_day(date_key, price_dict)
 

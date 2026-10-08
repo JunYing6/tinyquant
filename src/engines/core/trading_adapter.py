@@ -72,6 +72,7 @@ class TradingContractAdapter:
         for strategy in self.strategies:
             if strategy.strategy_name not in self._skip_names:
                 self._match_strategy(strategy, event)
+        self._match_real(event)
         for (name, _), aggregator in self._aggregators.items():
             if name in self._skip_names:
                 continue
@@ -103,6 +104,12 @@ class TradingContractAdapter:
                 }
             )
 
+    def _match_real(self, event: MarketEvent | Mapping[str, Any]) -> None:
+        """组合流：真实账户撮合器消费同一价格事件（与子策略撮合器同序），逐笔复刻订单在此成交。"""
+        matcher = getattr(self.entity, "real_matcher", None)
+        if matcher is not None:
+            matcher.match_event(event, self._current_date)
+
     def feed_execution_tick(self, tick: Mapping[str, Any]) -> None:
         self._current_date = self._tick_date(tick) or self._current_date
         self.entity.on_tick(dict(tick))
@@ -118,10 +125,15 @@ class TradingContractAdapter:
                 continue
             if bar.frequency in strategy.timer.kline_frequencies:
                 self._match_strategy(strategy, bar)  # 先撮合（推进seq、成交上根bar订单）
-                strategy.on_kline_bar(bar)           # 再喂信号（提交下根bar订单）
                 matched = True
         if not matched:
             raise ValueError(f"unsubscribed completed frequency: {bar.frequency}")
+        self._match_real(bar)
+        for strategy in self.strategies:
+            if strategy.strategy_name in self._skip_names:
+                continue
+            if bar.frequency in strategy.timer.kline_frequencies:
+                strategy.on_kline_bar(bar)  # 再喂信号（提交下根bar订单）
 
     def feed_prebuilt_bars(self, frequency: str, bars: list[KlineBar]) -> None:
         for (name, subscribed), aggregator in self._aggregators.items():
@@ -135,6 +147,7 @@ class TradingContractAdapter:
         for strategy in self.strategies:
             if strategy.strategy_name not in self._skip_names:
                 self._match_strategy(strategy, bar)  # 先撮合
+        self._match_real(bar)
         for (name, frequency), aggregator in self._aggregators.items():
             if name not in self._skip_names and frequency.endswith("d"):
                 aggregator.feed_daily(bar)
@@ -156,6 +169,9 @@ class TradingContractAdapter:
         for strategy in self.strategies:
             if strategy.tick_matcher is not None:
                 strategy.tick_matcher.expire_day(self._current_date)
+        matcher = getattr(self.entity, "real_matcher", None)
+        if matcher is not None:
+            matcher.expire_day(self._current_date)
 
     def pending_intents(self) -> tuple[Any, ...]:
         return tuple(
