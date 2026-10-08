@@ -82,3 +82,23 @@ def test_cancel_removes_pending():
     (order,) = m.submit_requests([ExecutionRequest(code="A", action="BUY", time="t", volume=100, timing="market")], "20260930")
     assert m.cancel(order.order_id)
     assert not m.pending_orders()
+
+
+def test_execution_delay_fills_on_nth_bar_after_signal():
+    acct = Rec()
+    m = MatchingEngine(acct.order, None, execution_delay=2)
+    m.match_event(bar("A", 1, 10.0, 10.0), "20260930")  # 信号 bar（seq=1）
+    m.submit_requests([ExecutionRequest(code="A", action="BUY", time="t", volume=100, timing="next_bar_open")], "20260930")
+    assert m.match_event(bar("A", 2, 12.0, 12.0), "20260930") == []  # 第 1 个事件，未到延迟
+    assert acct.fills == []
+    m.match_event(bar("A", 3, 14.0, 14.0), "20260930")  # 第 2 个事件 -> open=14 成交
+    assert acct.fills and acct.fills[0][3] == 14.0 and acct.fills[0][4] == 100
+
+
+def test_execution_delay_fills_on_nth_tick_after_submit():
+    acct = Rec()
+    m = MatchingEngine(acct.order, None, execution_delay=2)
+    m.submit_requests([ExecutionRequest(code="A", action="BUY", time="t", volume=100, timing="market")], "20260930")
+    assert m.match_event(tick("A", 15.0, ask=15.0, bid=14.9), "20260930") == []  # 第 1 个 tick
+    m.match_event(tick("A", 16.0, ask=16.0, bid=15.9), "20260930")  # 第 2 个 tick -> 按 ask=16
+    assert acct.fills and acct.fills[0][3] == 16.0

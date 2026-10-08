@@ -232,11 +232,15 @@ def test_fast_backtest_executes_sizing_intent_kline_intent() -> None:
 
 
 def test_tick_backtest_replays_trade_events_through_matching_runtime() -> None:
-    tick = TradeTick(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=_instant("20240102", "09:31:00"), event_time=_instant("20240102", "09:31:00"), available_at=None, trading_date=_instant("20240102").date(), source="test", quality="valid", metadata={}, event_type="trade", price=10.0, size=100.0, turnover=1_000.0, side="UNKNOWN", sequence=None)
-    engine = FastBacktestEngine(TickStrategy(), "20240102", "20240102", mode="tick", data_gateway=_gateway([BARS[0]], events=[tick], days=["20240102"]), progress_bar=False)
+    ticks = [
+        TradeTick(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=_instant("20240102", "09:31:00"), event_time=_instant("20240102", "09:31:00"), available_at=None, trading_date=_instant("20240102").date(), source="test", quality="valid", metadata={}, event_type="trade", price=10.0, size=100.0, turnover=1_000.0, side="UNKNOWN", sequence=None),
+        TradeTick(schema_version="1", event_id=None, instrument_id="000001.SZ", asset_type="equity", effective_time=_instant("20240102", "09:32:00"), event_time=_instant("20240102", "09:32:00"), available_at=None, trading_date=_instant("20240102").date(), source="test", quality="valid", metadata={}, event_type="trade", price=10.0, size=100.0, turnover=1_000.0, side="UNKNOWN", sequence=None),
+    ]
+    engine = FastBacktestEngine(TickStrategy(), "20240102", "20240102", mode="tick", data_gateway=_gateway([BARS[0]], events=ticks, days=["20240102"]), progress_bar=False)
 
     engine.run()
 
+    # 信号在第一个 tick 产出，按“下一个 tick 成交”（execution_delay 默认 1）
     assert engine.daily_positions[-1]["positions"] == {"000001.SZ": 100}
 
 

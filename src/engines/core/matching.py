@@ -55,19 +55,24 @@ class MatchingEngine:
         match_mode: str = "quote_or_last",
         slippage: Callable[[float, str], float] | None = None,
         default_timing: str | None = None,
+        execution_delay: int = 1,
     ) -> None:
         if match_mode not in _MATCH_MODES:
             raise ValueError(f"match_mode must be one of {sorted(_MATCH_MODES)}")
         if default_timing is not None and default_timing not in _TIMINGS:
             raise ValueError(f"default_timing must be one of {sorted(_TIMINGS)}")
+        if not isinstance(execution_delay, int) or isinstance(execution_delay, bool) or execution_delay < 1:
+            raise ValueError("execution_delay must be an integer >= 1")
         self._account_order = account_order
         self._event_sink = event_sink
         self._match_mode = match_mode
         self._slippage = slippage
         self._default_timing = default_timing
+        self._execution_delay = execution_delay
         self._orders: dict[str, MatchingOrder] = {}
         self._pending: list[str] = []
-        self._seq: dict[str, int] = {}
+        self._bar_seq: dict[str, int] = {}
+        self._tick_seq: dict[str, int] = {}
 
     def _emit(self, order: MatchingOrder, status: str, reason: str = "") -> None:
         if self._event_sink is None:
@@ -101,6 +106,10 @@ class MatchingEngine:
             return "market"
         return self._default_timing or "limit"
 
+    def _counter_for(self, timing: str) -> dict[str, int]:
+        """成交延迟按订单自身的价格事件类型计数：K 线单数 K 线，tick 单数 tick。"""
+        return self._bar_seq if timing in ("next_bar_open", "next_bar_close") else self._tick_seq
+
     def submit_requests(
         self, requests: list[ExecutionRequest], trade_date: Any
     ) -> list[MatchingOrder]:
@@ -117,7 +126,7 @@ class MatchingEngine:
                 int(request.volume),
                 timing,
                 request.price if timing == "limit" else None,
-                dict(self._seq),
+                dict(self._counter_for(timing)),
                 date_key,
             )
             self._orders[order.order_id] = order
@@ -137,14 +146,18 @@ class MatchingEngine:
             return []
         if is_trade and self._match_mode == "quote_only":
             return []
-        if is_bar:
-            self._seq[code] = self._seq.get(code, 0) + 1
+        # 推进该标的对应事件流的计数（用于成交延迟：第 N 个 k_line/tick）
+        counter = self._bar_seq if is_bar else self._tick_seq
+        counter[code] = counter.get(code, 0) + 1
         matched: list[MatchingOrder] = []
         for order_id in list(self._pending):
             order = self._orders[order_id]
             if order.code != code:
                 continue
-            fill_price, ok = self._fill(order, event, self._seq.get(code, 0))
+            order_counter = self._counter_for(order.timing)
+            if order_counter.get(code, 0) - order.seq.get(code, 0) < self._execution_delay:
+                continue  # 未到成交延迟
+            fill_price, ok = self._fill(order, event)
             if not ok or fill_price is None or fill_price <= 0:
                 continue
             if self._slippage is not None:
@@ -175,12 +188,12 @@ class MatchingEngine:
             matched.append(order)
         return matched
 
-    def _fill(self, order: MatchingOrder, event: Any, seq: int) -> tuple[float | None, bool]:
+    def _fill(self, order: MatchingOrder, event: Any) -> tuple[float | None, bool]:
         if order.timing in ("next_bar_open", "next_bar_close"):
             if not hasattr(event, "open"):
                 return None, False
             price = getattr(event, "open" if order.timing == "next_bar_open" else "close", None)
-            return price, seq == order.seq.get(order.code, -1) + 1
+            return price, True
         ask = getattr(event, "ask1_price", None)
         if ask is None:
             levels = getattr(event, "ask_levels", None)
@@ -219,8 +232,9 @@ class MatchingEngine:
         for order_id in list(self._pending):
             order = self._orders[order_id]
             if order.timing in ("next_bar_open", "next_bar_close"):
-                # next_bar 订单存活到下一根 K 线成交；仅当目标日之后仍未成交才过期
-                expires = order.trade_date < day
+                # next_bar 订单需存活到第 N 个 K 线；仅当已过该窗口仍未成交才过期
+                seen = self._bar_seq.get(order.code, 0) - order.seq.get(order.code, 0)
+                expires = seen >= self._execution_delay
             else:
                 # 日内（market/limit）订单当日未成交即过期
                 expires = order.trade_date <= day

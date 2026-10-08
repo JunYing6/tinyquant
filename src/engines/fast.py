@@ -16,6 +16,7 @@ from engines.core.trading_adapter import TradingContractAdapter
 from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, ReplayClock, replay_events
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
+from trading_nodes_base.types import ExecutionMode
 
 _VALID_MODES = {"auto", "fast", "tick", "kline", "daily"}
 _VALID_TIMINGS = {"market", "limit", "next_bar_open", "next_bar_close"}
@@ -27,11 +28,13 @@ class FastBacktestEngine:
                  slippage: Mapping[str, Any] | SlippageModel | None = None,
                  order_cost: dict[str, float] | None = None, progress_bar: bool = True,
                  progress_callback: Any = None, data_gateway: DataGateway | None = None,
-                 execution_timing: str = "next_bar_open") -> None:
+                 execution_timing: str = "next_bar_open", execution_delay: int = 1) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
         if execution_timing not in _VALID_TIMINGS:
             raise ValueError(f"execution_timing must be one of {sorted(_VALID_TIMINGS)}")
+        if not isinstance(execution_delay, int) or isinstance(execution_delay, bool) or execution_delay < 1:
+            raise ValueError("execution_delay must be an integer >= 1")
         if data_gateway is None:
             raise ValueError("data_gateway is required")
         if initial_capital <= 0:
@@ -44,6 +47,7 @@ class FastBacktestEngine:
         self.initial_capital = float(initial_capital)
         self.data_gateway = data_gateway
         self.execution_timing = execution_timing
+        self.execution_delay = execution_delay
         self.progress_bar = progress_bar
         self.progress_callback = progress_callback
         self.is_stream = isinstance(entity, BaseStream)
@@ -58,6 +62,7 @@ class FastBacktestEngine:
                 strategy.account.order, strategy.handle_order_event,
                 slippage=self.slippage.apply,
                 default_timing=self.execution_timing,
+                execution_delay=self.execution_delay,
             )
         self.trade_dates: list[str] = []
         self.equity_curve: list[dict[str, Any]] = []
@@ -146,7 +151,8 @@ class FastBacktestEngine:
         return slices
 
     def _execute_pending_daily(self, price_dict: dict[str, float]) -> None:
-        # 仅剩 price=0 的 MARKET 单（策略自定义日终单 / 风控清仓），按当日收盘成交
+        # 仅剩 price=0 的 MARKET 单（策略自定义日终单 / 风控清仓），按当日收盘成交；
+        # K 线（next_bar）订单已直接交撮合器，绝不在此按收盘价兜底。
         for strategy in self._strategies:
             if not strategy._pending_orders:
                 continue
@@ -154,6 +160,9 @@ class FastBacktestEngine:
             strategy._pending_orders = []
             orders: list[tuple] = []
             for request in pending:
+                if request.mode is not ExecutionMode.MARKET:
+                    strategy._pending_orders.append(request)
+                    continue
                 price = request.price if request.price and request.price > 0 else price_dict.get(request.code)
                 if not price or price <= 0 or request.volume is None or request.volume <= 0:
                     strategy._pending_orders.append(request)

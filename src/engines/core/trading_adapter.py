@@ -67,6 +67,11 @@ class TradingContractAdapter:
         if isinstance(event, RegisteredEvent):
             return
         self._current_date = event.trading_date or self._current_date
+        # 先撮合（推进事件计数、成交既有订单），再让策略看到本事件 —— 与 K 线一致，
+        # 保证「下单后第 N 个 k_line/tick 成交」对 bar/tick 语义统一。
+        for strategy in self.strategies:
+            if strategy.strategy_name not in self._skip_names:
+                self._match_strategy(strategy, event)
         for (name, _), aggregator in self._aggregators.items():
             if name in self._skip_names:
                 continue
@@ -80,9 +85,6 @@ class TradingContractAdapter:
         elif isinstance(event, QuoteTick):
             if hasattr(self.entity, "on_quote"):
                 self.entity.on_quote(event)
-        for strategy in self.strategies:
-            if strategy.strategy_name not in self._skip_names:
-                self._match_strategy(strategy, event)
 
     def _match_strategy(self, strategy: Any, event: MarketEvent | Mapping[str, Any]) -> None:
         if strategy.tick_matcher is None:
