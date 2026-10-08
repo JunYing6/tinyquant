@@ -268,6 +268,17 @@ def test_stream_backtest_uses_shared_real_account_and_mind_weights() -> None:
     assert stream.mind.current_weights == {"stream-child": 1.0}
 
 
+def test_stream_backtest_replicates_day_end_market_orders_to_real_account() -> None:
+    # BuyingFastStrategy 在盘前挂一笔 price=0 的 MARKET 单（日终单独撮合，按收盘 close 成交）
+    stream = BaseStream("day-end", [BuyingFastStrategy("child")], EqualMind())
+    engine = FastBacktestEngine(stream, "20240102", "20240103", initial_capital=100_000, mode="fast", data_gateway=_gateway(BARS), progress_bar=False)
+
+    engine.run()
+
+    assert engine.account.positions == {"000001.SZ": 100}  # 日终单复刻到真实账户
+    assert stream.shadow_accounts["child"].positions == {"000001.SZ": 100}
+
+
 def test_backtest_wraps_gateway_errors_with_dataset_and_date() -> None:
     class FailingGateway(InMemoryGateway):
         def read(self, request: DataRequest) -> Any:

@@ -80,6 +80,30 @@ class BaseStream:
         if scaled:
             self.real_matcher.submit_requests(scaled, trade_date)
 
+    def replicate_close_orders(self, strategy_name: str, orders: List[tuple]) -> None:
+        """把某子策略的日终单（收盘/末 tick 成交的价 0 市价单）按同一缩放比复刻到真实账户。
+
+        与 ``replicate_orders`` 同一缩放口径，但这些单是"单独撮合"的既成交价，
+        因此直接在真实账户按同价成交，不再经撮合器。
+        """
+        if self.real_account is None or not orders:
+            return
+        base = self._child_open_equity.get(strategy_name) or self._shadow_capital
+        if not base or base <= 0:
+            return
+        weight = self.mind.current_weights.get(strategy_name, 0.0)
+        if weight <= 0:
+            return
+        scale = self.real_account.total_equity * weight / base
+        scaled: List[tuple] = []
+        for date, time, code, price, signed, order_type in orders:
+            volume = int(abs(signed) * scale) // 100 * 100
+            if volume <= 0:
+                continue
+            scaled.append((date, time, code, float(price), volume if signed > 0 else -volume, order_type))
+        if scaled:
+            self.real_account.order(scaled)
+
     @staticmethod
     def _new_shadow_account(account: Any, money: float) -> Any:
         account_type = type(account)

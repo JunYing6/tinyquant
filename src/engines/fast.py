@@ -13,7 +13,7 @@ from engines.core.performance import compute_stats
 from engines.core.pipeline import DataProviderError, UnifiedDataPipeline
 from engines.core.slippage import SlippageModel
 from engines.core.trading_adapter import TradingContractAdapter
-from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, ReplayClock, replay_events
+from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, ReplayClock, TradeTick, replay_events
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
 from trading_nodes_base.types import ExecutionMode
@@ -145,11 +145,12 @@ class FastBacktestEngine:
                 continue  # 因子已 drop：跳过该标的数据（流式提速）
             self._adapter.feed_daily_bar(bar)
         ticked = False
+        tick_prices: dict[str, float] | None = None
         if any(getattr(factor, "execution_role", "") != "intent_executor" for strategy in self._strategies for factor in strategy.timer.tick_factors):
-            self._run_tick_replay(session, price_dict, active)
+            tick_prices = self._run_tick_replay(session, price_dict, active)
             ticked = True
-        # 直接订单（策略 _pending_orders，price=0 的 MARKET 单）按当日收盘价+滑点成交
-        self._execute_pending_daily(price_dict)
+        # 直接订单（策略 _pending_orders，price=0 的 MARKET 单）日终单独撮合
+        self._execute_pending_daily(price_dict, tick_prices)
         if ticked:
             self._adapter.flush_day(session.trading_date)
         else:
@@ -181,9 +182,11 @@ class FastBacktestEngine:
             cur = nxt
         return slices
 
-    def _execute_pending_daily(self, price_dict: dict[str, float]) -> None:
-        # 仅剩 price=0 的 MARKET 单（策略自定义日终单 / 风控清仓），按当日收盘成交；
+    def _execute_pending_daily(self, price_dict: dict[str, float], tick_prices: dict[str, float] | None = None) -> None:
+        # 仅剩 price=0 的 MARKET 单（策略自定义日终单 / 风控清仓）单独撮合：
+        # 日线模式按收盘 K 线 close 成交；tick 模式按当日最后一根 tick 成交。
         # K 线（next_bar）订单已直接交撮合器，绝不在此按收盘价兜底。
+        closes = tick_prices if tick_prices else price_dict
         for strategy in self._strategies:
             if not strategy._pending_orders:
                 continue
@@ -194,7 +197,7 @@ class FastBacktestEngine:
                 if request.mode is not ExecutionMode.MARKET:
                     strategy._pending_orders.append(request)
                     continue
-                price = request.price if request.price and request.price > 0 else price_dict.get(request.code)
+                price = request.price if request.price and request.price > 0 else closes.get(request.code)
                 if not price or price <= 0 or request.volume is None or request.volume <= 0:
                     strategy._pending_orders.append(request)
                     continue
@@ -203,9 +206,18 @@ class FastBacktestEngine:
                 orders.append((strategy._current_date, request.time, request.code, price, signed, "n"))
             if orders:
                 strategy.account.order(orders)
+                if self.is_stream:
+                    self.entity.replicate_close_orders(strategy.strategy_name, orders)
 
-    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], active: set[str] | None = None, slice_minutes: int = 30) -> None:
+    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], active: set[str] | None = None, slice_minutes: int = 30) -> dict[str, float]:
         base = set(price_dict) | self._active_codes()
+        last_prices: dict[str, float] = {}
+
+        def feed(event: Any) -> None:
+            if isinstance(event, TradeTick) and event.instrument_id and event.price:
+                last_prices[event.instrument_id] = float(event.price)
+            self._adapter.feed_market_event(event)
+
         for start, end in self._time_slices(session.open, session.close, slice_minutes):
             # 每片前重算活动池：因子 drop 掉的代码，本片起不再拉取
             pool = set(self._day_feed_codes())
@@ -222,7 +234,8 @@ class FastBacktestEngine:
                 events.extend(batch.records)
             events.sort(key=lambda event: (event.event_time or datetime.min.replace(tzinfo=session.open.tzinfo), getattr(event, "sequence", 0) or 0))
             clock = ReplayClock(session)
-            replay_events(events, clock, self._adapter.feed_market_event)
+            replay_events(events, clock, feed)
+        return last_prices
 
     def _settle_day(self, price_dict: dict[str, float]) -> None:
         self.entity.daily_settle(price_dict) if isinstance(self.entity, BaseStream) else (self.account.daily_summarize(price_dict), cast(BaseStrategy, self.entity).on_day_end())
