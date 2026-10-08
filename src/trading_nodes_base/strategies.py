@@ -277,52 +277,41 @@ class BaseStrategy:
         intents = self.timer.kline_bar_input(bar)
         if intents:
             self._materialize_kline_orders(intents, bar)
+            self._dispatch_kline_orders(bar)
         return intents
 
     def _materialize_kline_orders(self, intents: List[SignalIntent], bar: KlineBar) -> None:
-        """K线意图 → 真实订单：择时器定仓（sizing）→ 策略乘风控比例 → 数量 → 订单。
+        """K线意图 → 带 ``next_bar_*`` 时机的订单，写入出站队列。
 
-        订单以 ``next_bar_*`` 时机写入 ``_pending_orders``，由引擎在全日
-        bar 回放后交撮合器成交（与 tick 路径同一模型：策略产出订单，引擎只成交）。
+        因子只发裸信号；仓位由择时器 ``convert_intents`` 计算。风险缩放与
+        仓位→数量换算不在这一步做，统一交给 ``_dispatch_kline_orders``，与
+        tick 路径共用同一出站→提交模型。
         """
         timing_map = {"open": "next_bar_open", "close": "next_bar_close"}
-        ratio = self.risk_ctrl.target_position_ratio if self.risk_ctrl is not None else 1.0
         price = float(bar.close)
         for intent in intents:
-            sized = self.timer.convert_intents([intent], price)  # 择时器定仓
-            if not sized:
-                continue
-            order = sized[0]
-            if order.volume is not None and order.volume > 0:
-                # 显式数量：乘风控比例
-                volume = (
-                    self._buy_lot_round(order.volume * ratio)
-                    if intent.action == "BUY"
-                    else int(order.volume * ratio)
-                )
-            elif order.sizing_intent is not None:
-                # 仓位比例：乘风控比例后按账户权益/持仓换算
-                sizing = float(order.sizing_intent)
-                if intent.action == "BUY":
-                    volume = self._buy_position_volume(price, sizing * ratio)
-                else:
-                    held = int(self.current_positions.get(intent.code, 0))
-                    volume = self._sell_position_volume(held, min(sizing * ratio, 1.0))
-            else:
-                continue
-            if volume <= 0:
-                continue
             timing = timing_map.get(
                 intent.execution_timing or self.execution_timing, "next_bar_open"
             )
-            self._pending_orders.append(ExecutionRequest(
-                code=intent.code, action=intent.action, time=intent.trigger_time,
-                price=price, volume=int(volume), timing=timing, reason=intent.reason,
-            ))
+            for order in self.timer.convert_intents([intent], price):
+                self._pending_orders.append(replace(order, timing=timing))
         consumed = {id(intent) for intent in intents}
         self.timer.pending_intents = [
             intent for intent in self.timer.pending_intents if id(intent) not in consumed
         ]
+
+    def _dispatch_kline_orders(self, bar: KlineBar) -> None:
+        """K线订单交手给执行端：撮合器（回测）或就地执行（无撮合器，如实盘）。
+
+        有撮合器时订单直接提交，由撮合器按 ``next_bar_*`` 时机在下一根 K 线
+        自主成交；不再经引擎二次转发。风险缩放与数量换算由
+        ``_canonicalize_requests`` 统一套用，只发生一次。
+        """
+        price_dict = {bar.code: float(bar.close)}
+        if self.tick_matcher is not None:
+            self._submit_pending_to_matcher(price_dict)
+        else:
+            self._execute_pending_orders(price_dict)
 
     def on_trade(self, trade: Any) -> List[tuple]:
         return self.on_tick({"code": trade.instrument_id, "time": trade.event_time.strftime("%H:%M:%S"), "price": trade.price, "volume": trade.size, "amount": trade.turnover})
