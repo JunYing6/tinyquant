@@ -41,6 +41,10 @@ class BaseStream:
     def set_live_order_executor(self, executor: Optional[Callable[[List[tuple]], None]]) -> None:
         self._live_order_executor = executor
 
+    def snapshot_positions(self) -> Dict[str, Dict[str, int]]:
+        """各子策略影子账户当前持仓的快照（用于日终净额镜像）。"""
+        return {name: dict(account.positions) for name, account in self.shadow_accounts.items()}
+
     @staticmethod
     def _new_shadow_account(account: Any, money: float) -> Any:
         account_type = type(account)
@@ -178,13 +182,16 @@ class BaseStream:
             if name not in self._skip_children:
                 strategy.on_day_end()
 
-    def execute_daily(self, price_dict: Dict[str, float]) -> None:
+    def execute_daily(self, price_dict: Dict[str, float], before: Optional[Dict[str, Dict[str, int]]] = None) -> None:
+        """子策略按日执行并把它们的加权净额镜像到真实账户。
+
+        ``before`` 为日初的影子持仓快照；不传则取当前持仓（子订单尚未执行时的传统用法）。
+        Fast 引擎在 K 线路径下于日初快照、日终传入，使 bar 期间由撮合器撮合的子订单也能被镜像。
+        """
         if self.real_account is None:
             raise RuntimeError("Stream account is not configured")
-        before = {
-            name: dict(account.positions)
-            for name, account in self.shadow_accounts.items()
-        }
+        if before is None:
+            before = self.snapshot_positions()
         for name, strategy in self.strategies.items():
             if name not in self._skip_children:
                 strategy.daily_execute(price_dict)

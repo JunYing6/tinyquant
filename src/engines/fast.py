@@ -97,8 +97,10 @@ class FastBacktestEngine:
         self._pipeline.clock = clock
         date_key = session.trading_date.strftime("%Y%m%d")
         self._pipeline.run_daily(date_key)
+        stream_before = None
         if isinstance(self.entity, BaseStream):
             self.entity.on_daily({})
+            stream_before = self.entity.snapshot_positions()
         try:
             # 读数范围 = 因子声明池(含池外基准/相关股) ∪ 持仓/股票池，缺一则回退全量
             codes = sorted(set(self._day_feed_codes()) | self._active_codes())
@@ -127,6 +129,9 @@ class FastBacktestEngine:
             for strategy in self._strategies:
                 if strategy.tick_matcher is not None:
                     strategy.tick_matcher.expire_day(session.trading_date)
+        # 组合流：K 线路径下子策略订单由撮合器落在影子账户，日终把加权净额镜像到真实账户
+        if stream_before is not None and not ticked:
+            self.entity.execute_daily(price_dict, before=stream_before)
         self._settle_day(price_dict)
         self._record_day(date_key, price_dict)
 
