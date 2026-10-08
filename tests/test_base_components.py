@@ -849,6 +849,25 @@ def test_timer_ledger_marks_cancelled_on_cancel() -> None:
     assert strategy.timer_positions() == {}
 
 
+def test_rebalance_gap_uses_real_holdings() -> None:
+    factor = DirectTickFactor("gap")
+    factor.volume = 1000
+    factor._set_target_codes({"000001.SZ"})
+    strategy = Strategy("gap-strategy", timer=BaseTimeSelection("gap-timer", [], [factor]))
+    account = FakeAccount(10_000.0)
+    strategy.set_account(account)
+    strategy._current_date = "20260930"
+    strategy.tick_matcher = FakeMatcher()
+
+    strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
+    account.positions["000001.SZ"] = 400  # 真实持仓
+
+    assert strategy.timer_positions() == {"000001.SZ": 1000}  # 择时器原始目标
+    assert strategy.rebalance_gap(1.0) == {"000001.SZ": 600}   # 应有1000 - 实持400
+    assert strategy.rebalance_gap(0.5) == {"000001.SZ": 100}   # 应有500  - 实持400
+    assert strategy.rebalance_gap(0.0) == {"000001.SZ": -400}  # 应有0    - 实持400 -> 卖
+
+
 
 @pytest.mark.parametrize("terminal_status", ["CANCELLED", "EXPIRED"])
 def test_strategy_terminal_matcher_events_return_partial_remainder_idempotently(
