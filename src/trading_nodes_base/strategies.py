@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from tools.data import DataBatch, DataRequest
-from trading_nodes_base.requests import canonical_request, decode_routing, table_records, with_routing
+from tools.data import DataBatch
+from trading_nodes_base.requests import canonical_request, decode_routing, with_routing
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
 from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection, ContextSegment, RiskDecision, StateStorage, TradingContext
 
@@ -75,7 +75,6 @@ class BaseStrategy:
         selector: Optional[BaseStockPicking] = None,
         timer: Optional[BaseTimeSelection] = None,
         risk_ctrl: Optional[BaseRiskControl] = None,
-        trade_config: Optional[Dict[str, Any]] = None,
         state_storage: Optional[StateStorage] = None,
     ) -> None:
         if timer is None:
@@ -92,23 +91,14 @@ class BaseStrategy:
         self.context = TradingContext(self._state_storage)
         self._current_date: Any = None
         self._daily_pipeline_triggered = False
-        self._live_trading = False
-        self.trade_config = trade_config or {"buy_type": "p", "buy_amount": 0.1, "sell_type": "n"}
         self._position_details: Dict[str, Dict[str, Any]] = {}
         self._pending_orders: List[ExecutionRequest] = []
         self._inflight_orders: Dict[Any, List[_InflightOrder]] = {}
-        self._target_weights: Dict[str, float] = {}
-        self._last_prices: Dict[str, float] = {}
-        self.order_events: List[dict[str, Any]] = []
         self.tick_matcher: Any = None
         self._original_buy_targets: Dict[str, int] = {}
         self._tail_replenished: bool = False
         self._last_risk_target_ratio: float = 1.0
         self.restore_state()
-
-    @staticmethod
-    def table_records(batch: DataBatch) -> tuple:
-        return table_records(batch)
 
     @property
     def current_positions(self) -> Dict[str, int]:
@@ -191,8 +181,7 @@ class BaseStrategy:
         self._daily_pipeline_triggered = True
         if self.risk_ctrl is not None:
             self._apply_risk_decision(self.risk_ctrl.on_pre_market())
-        target_pool, weights = self._run_stock_selection()
-        self._target_weights = weights
+        target_pool, _ = self._run_stock_selection()
         if self.timer is not None:
             self.timer.selector_pool = list(target_pool)
             self.timer.position_pool = list(self.current_positions)
@@ -269,8 +258,6 @@ class BaseStrategy:
     def on_kline_bar(self, bar: KlineBar) -> List[SignalIntent]:
         if self.risk_ctrl is not None:
             self._apply_risk_decision(self.risk_ctrl.on_bar(bar))
-        if isinstance(bar, KlineBar):
-            self._last_prices[bar.code] = float(bar.close)
         intents = self.timer.kline_bar_input(bar)
         if intents:
             self._materialize_kline_orders(intents, bar)
@@ -398,39 +385,18 @@ class BaseStrategy:
                 sized.append(request)
         return sized
 
+    def _active_requests(self) -> Iterator[ExecutionRequest]:
+        """出站队列与在途订单中的全部请求（同一标的可能多处出现）。"""
+        yield from self._pending_orders
+        for orders in self._inflight_orders.values():
+            for order in orders:
+                yield order.request
+
     def _active_sell_codes(self) -> set[str]:
-        return {
-            request.code
-            for request in self._pending_orders
-            if request.action == "SELL"
-        } | {
-            order.request.code
-            for orders in self._inflight_orders.values()
-            for order in orders
-            if order.request.action == "SELL"
-        }
+        return {request.code for request in self._active_requests() if request.action == "SELL"}
 
     def _active_request_keys(self) -> set[tuple[str, str]]:
-        return {
-            (request.code, request.action) for request in self._pending_orders
-        } | {
-            (inflight.request.code, inflight.request.action)
-            for orders in self._inflight_orders.values()
-            for inflight in orders
-        }
-
-    def _has_active_request(self, request: ExecutionRequest) -> bool:
-        if any(
-            pending.code == request.code and pending.action == request.action
-            for pending in self._pending_orders
-        ):
-            return True
-        return any(
-            inflight.request.code == request.code
-            and inflight.request.action == request.action
-            for orders in self._inflight_orders.values()
-            for inflight in orders
-        )
+        return {(request.code, request.action) for request in self._active_requests()}
 
     def _queue_tick_requests(
         self,
@@ -573,14 +539,6 @@ class BaseStrategy:
             available_fills[key] = available_fills.get(key, 0) - filled
             self._acknowledge_pending_sources(item.sources, filled)
         return orders
-
-    def _build_orders_from_signals(
-        self,
-        signals: List[ExecutionRequest],
-        price_dict: Optional[Dict[str, float]] = None,
-        apply_slippage: bool = True,
-    ) -> List[tuple]:
-        return [item.order for item in self._canonicalize_requests(signals, price_dict)]
 
     @staticmethod
     def _order_id_from_handle(handle: Any) -> Any:
@@ -736,7 +694,6 @@ class BaseStrategy:
             "original_buy_targets": dict(self._original_buy_targets),
             "tail_replenished": self._tail_replenished,
             "last_risk_target_ratio": self._last_risk_target_ratio,
-            "target_weights": dict(self._target_weights),
             "pending_orders": [_request_to_dict(request) for request in self._pending_orders],
         }
 
@@ -756,7 +713,6 @@ class BaseStrategy:
         self._original_buy_targets = dict(state.get("original_buy_targets", {}) or {})
         self._tail_replenished = bool(state.get("tail_replenished", False))
         self._last_risk_target_ratio = float(state.get("last_risk_target_ratio", 1.0) or 1.0)
-        self._target_weights = dict(state.get("target_weights", {}) or {})
         self._pending_orders = [
             _request_from_dict(data) for data in (state.get("pending_orders", []) or [])
         ]
