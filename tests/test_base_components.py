@@ -807,6 +807,49 @@ def test_strategy_cancel_inflight_unknown_or_wrong_filter_is_noop() -> None:
     assert len(strategy._inflight_orders) == 1
 
 
+def test_timer_ledger_records_order_and_marks_filled() -> None:
+    from engines.core.matching import MatchingEngine
+
+    factor = DirectTickFactor("ledger")
+    factor._set_target_codes({"000001.SZ"})
+    strategy = Strategy("ledger-strategy", timer=BaseTimeSelection("ledger-timer", [], [factor]))
+    strategy.set_account(FakeAccount(1000.0))
+    strategy._current_date = "20260930"
+    strategy.tick_matcher = MatchingEngine(strategy.account.order, strategy.handle_order_event)
+
+    strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
+
+    assert len(strategy._timer_orders) == 1
+    entry = strategy._timer_orders[0]
+    assert (entry.code, entry.action, entry.target_volume, entry.status) == ("000001.SZ", "BUY", 100, "recorded")
+    assert entry.order_id is not None
+    assert strategy.timer_positions() == {"000001.SZ": 100}
+
+    strategy.handle_order_event({"order_id": entry.order_id, "status": "FILLED", "filled_volume": 100})
+    assert strategy._timer_orders[0].status == "filled"
+    assert strategy.timer_positions() == {"000001.SZ": 100}
+
+
+def test_timer_ledger_marks_cancelled_on_cancel() -> None:
+    from engines.core.matching import MatchingEngine
+
+    factor = DirectTickFactor("ledger-cancel")
+    factor._set_target_codes({"000001.SZ"})
+    strategy = Strategy("ledger-cancel-strategy", timer=BaseTimeSelection("ledger-cancel-timer", [], [factor]))
+    strategy.set_account(FakeAccount(1000.0))
+    strategy._current_date = "20260930"
+    strategy.tick_matcher = MatchingEngine(strategy.account.order, strategy.handle_order_event)
+
+    strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
+    assert strategy.timer_positions() == {"000001.SZ": 100}
+
+    strategy.cancel_inflight_orders(code="000001.SZ")
+
+    assert strategy._timer_orders[0].status == "cancelled"
+    assert strategy.timer_positions() == {}
+
+
+
 @pytest.mark.parametrize("terminal_status", ["CANCELLED", "EXPIRED"])
 def test_strategy_terminal_matcher_events_return_partial_remainder_idempotently(
     terminal_status: str,

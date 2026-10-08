@@ -36,6 +36,21 @@ class _InflightOrder:
     filled_volume: int = 0
 
 
+@dataclass
+class _TimerOrder:
+    """择时器台账记录：未乘风控缩放的原始订单及其生命周期。
+
+    status: ``recorded``（已发出，未成交）→ ``filled``（成交）或 ``cancelled``（未成交撤单）。
+    """
+
+    request: ExecutionRequest
+    code: str
+    action: str
+    target_volume: int
+    status: str = "recorded"
+    order_id: Any = None
+
+
 def _request_to_dict(request: ExecutionRequest) -> Dict[str, Any]:
     return {
         "code": request.code,
@@ -94,6 +109,7 @@ class BaseStrategy:
         self._position_details: Dict[str, Dict[str, Any]] = {}
         self._pending_orders: List[ExecutionRequest] = []
         self._inflight_orders: Dict[Any, List[_InflightOrder]] = {}
+        self._timer_orders: List[_TimerOrder] = []
         self.tick_matcher: Any = None
         self._original_buy_targets: Dict[str, int] = {}
         self._tail_replenished: bool = False
@@ -272,7 +288,9 @@ class BaseStrategy:
         """
         price = float(bar.close)
         for intent in intents:
-            self._pending_orders.extend(self.timer.convert_intents([intent], price))
+            created = self.timer.convert_intents([intent], price)
+            self._record_timer_orders(created, price)
+            self._pending_orders.extend(created)
         consumed = {id(intent) for intent in intents}
         self.timer.pending_intents = [
             intent for intent in self.timer.pending_intents if id(intent) not in consumed
@@ -308,6 +326,7 @@ class BaseStrategy:
         requests = self.timer.tick_input(tick)
         if not all(isinstance(request, ExecutionRequest) for request in requests):
             raise TypeError("timer tick_input must return ExecutionRequest values")
+        self._record_timer_orders(requests, tick.get("price", 0))
         self._preserve_buy_targets(requests)
         if self.tick_matcher is not None:
             self._queue_tick_requests(requests, active_sell_codes, active_request_keys)
@@ -332,6 +351,36 @@ class BaseStrategy:
                 self._original_buy_targets[request.code] = (
                     self._original_buy_targets.get(request.code, 0) + request.volume
                 )
+
+    def _record_timer_orders(self, requests: List[ExecutionRequest], price: Any) -> None:
+        """择时器发出的订单登记入台账（未乘风控缩放的原始数量）。"""
+        for request in requests:
+            target = self._timer_target_volume(request, price)
+            if target <= 0:
+                continue
+            self._timer_orders.append(
+                _TimerOrder(request, request.code, request.action, int(target))
+            )
+
+    def _timer_target_volume(self, request: ExecutionRequest, price: Any) -> int:
+        if request.volume is not None and request.volume > 0:
+            return int(request.volume)
+        if request.sizing_intent is not None and request.sizing_intent > 0 and price:
+            if request.action == "BUY":
+                return int(self._buy_position_volume(float(price), request.sizing_intent))
+            held = int(self._position_details.get(request.code, {}).get("volume", 0))
+            return int(self._sell_position_volume(held, min(request.sizing_intent, 1.0)))
+        return 0
+
+    def timer_positions(self) -> Dict[str, int]:
+        """择时器台账的净原始持仓（``recorded`` + ``filled``；``cancelled`` 不计）。"""
+        positions: Dict[str, int] = {}
+        for order in self._timer_orders:
+            if order.status == "cancelled":
+                continue
+            signed = order.target_volume if order.action == "BUY" else -order.target_volume
+            positions[order.code] = positions.get(order.code, 0) + signed
+        return positions
 
     def _maybe_queue_tail_replenishment(self, tick: Dict[str, Any]) -> None:
         """End-of-day 补仓: top up toward the ORIGINAL timer target scaled by
@@ -538,6 +587,11 @@ class BaseStrategy:
             filled = min(abs(item.order[4]), available_fills.get(key, 0))
             available_fills[key] = available_fills.get(key, 0) - filled
             self._acknowledge_pending_sources(item.sources, filled)
+        # 无撮合器直连成交：台账里对应记录回填为 filled
+        executed = [source.request for item in canonical for source in item.sources]
+        for timer_order in self._timer_orders:
+            if timer_order.status == "recorded" and any(timer_order.request is r for r in executed):
+                timer_order.status = "filled"
         return orders
 
     @staticmethod
@@ -590,8 +644,15 @@ class BaseStrategy:
                         source.volume,
                         source.requested_volume,
                     ))
+                    self._link_timer_order(source.request, order_id)
             if inflight:
                 self._inflight_orders[order_id] = inflight
+
+    def _link_timer_order(self, request: ExecutionRequest, order_id: Any) -> None:
+        """把台账里对应这笔择时器订单的记录，关联到真实订单号（用于成交/撤单回填）。"""
+        for order in self._timer_orders:
+            if order.request is request and order.order_id is None:
+                order.order_id = order_id
 
     def inflight_orders(self) -> Dict[Any, List[ExecutionRequest]]:
         """在途（已提交、未到终态）订单快照：``order_id`` → 原始请求列表。"""
@@ -705,6 +766,10 @@ class BaseStrategy:
         for order in orders:
             self._return_inflight_remainder(order)
         self._enforce_risk_request_policy()
+        # 台账回填：成交 → filled；未成交撤单/拒绝/过期 → cancelled
+        for timer_order in self._timer_orders:
+            if timer_order.order_id == order_id and timer_order.status == "recorded":
+                timer_order.status = "filled" if status == "FILLED" else "cancelled"
 
     @staticmethod
     def _buy_lot_round(volume: float) -> int:
