@@ -766,6 +766,47 @@ def test_strategy_filled_matcher_event_removes_inflight_source() -> None:
     assert strategy._pending_orders == []
 
 
+def test_strategy_cancel_inflight_returns_unfilled_order_to_pending() -> None:
+    from engines.core.matching import MatchingEngine
+
+    factor = DirectTickFactor("cancel")
+    factor._set_target_codes({"000001.SZ"})
+    strategy = Strategy("cancel-strategy", timer=BaseTimeSelection("cancel-timer", [], [factor]))
+    strategy.set_account(FakeAccount(1000.0))
+    strategy.tick_matcher = MatchingEngine(strategy.account.order, strategy.handle_order_event)
+    strategy._current_date = "20260930"
+
+    strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
+
+    order_ids = list(strategy._inflight_orders)
+    assert len(order_ids) == 1
+    assert strategy._pending_orders == []
+    snapshot = strategy.inflight_orders()
+    assert list(snapshot) == order_ids
+    assert [request.volume for request in snapshot[order_ids[0]]] == [100]
+
+    assert strategy.cancel_inflight_orders(code="000001.SZ") == order_ids
+    assert strategy._inflight_orders == {}
+    assert [request.volume for request in strategy._pending_orders] == [100]
+
+
+def test_strategy_cancel_inflight_unknown_or_wrong_filter_is_noop() -> None:
+    from engines.core.matching import MatchingEngine
+
+    factor = DirectTickFactor("cancel-noop")
+    factor._set_target_codes({"000001.SZ"})
+    strategy = Strategy("cancel-noop-strategy", timer=BaseTimeSelection("cancel-noop-timer", [], [factor]))
+    strategy.set_account(FakeAccount(1000.0))
+    strategy.tick_matcher = MatchingEngine(strategy.account.order, strategy.handle_order_event)
+    strategy._current_date = "20260930"
+
+    strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
+
+    assert strategy.cancel_inflight("does-not-exist") is False
+    assert strategy.cancel_inflight_orders(code="999999.SZ") == []
+    assert len(strategy._inflight_orders) == 1
+
+
 @pytest.mark.parametrize("terminal_status", ["CANCELLED", "EXPIRED"])
 def test_strategy_terminal_matcher_events_return_partial_remainder_idempotently(
     terminal_status: str,

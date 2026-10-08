@@ -593,6 +593,42 @@ class BaseStrategy:
             if inflight:
                 self._inflight_orders[order_id] = inflight
 
+    def inflight_orders(self) -> Dict[Any, List[ExecutionRequest]]:
+        """在途（已提交、未到终态）订单快照：``order_id`` → 原始请求列表。"""
+        return {
+            order_id: [order.request for order in orders]
+            for order_id, orders in self._inflight_orders.items()
+        }
+
+    def cancel_inflight(self, order_id: Any) -> bool:
+        """按执行端句柄撤销单个在途订单；未成交余量经 ``handle_order_event`` 回退出站队列。"""
+        if self.tick_matcher is None or order_id not in self._inflight_orders:
+            return False
+        try:
+            return bool(self.tick_matcher.cancel(order_id))
+        except Exception:
+            return False
+
+    def cancel_inflight_orders(
+        self, code: Optional[str] = None, action: Optional[str] = None
+    ) -> List[Any]:
+        """撤销在途未成交订单，返回被撤销的 ``order_id`` 列表（``code``/``action`` 为空即全部）。
+
+        撤销决定在策略端；撮合器只按 ``order_id`` 执行，余量经 ``handle_order_event``
+        回到出站队列，可随后的 tick/bar 重新下单。
+        """
+        if self.tick_matcher is None:
+            return []
+        cancelled: List[Any] = []
+        for order_id, orders in list(self._inflight_orders.items()):
+            if code is not None and not any(order.request.code == code for order in orders):
+                continue
+            if action is not None and not any(order.request.action == action for order in orders):
+                continue
+            if self.cancel_inflight(order_id):
+                cancelled.append(order_id)
+        return cancelled
+
     @staticmethod
     def _event_volume(event: Mapping[str, Any], *names: str) -> Optional[int]:
         for name in names:
