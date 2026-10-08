@@ -33,6 +33,7 @@ class BaseStream:
         self.shadow_accounts: Dict[str, Any] = {}
         self.real_account: Any = None
         self.real_matcher: Any = None
+        self._shadow_capital: float = 0.0
         self._skip_children: set[str] = set()
         self._current_date: Optional[datetime] = None
         self._live_order_executor: Optional[Callable[[List[tuple]], None]] = None
@@ -52,21 +53,25 @@ class BaseStream:
         self.real_matcher = matcher
 
     def replicate_orders(self, strategy_name: str, requests: List[Any], trade_date: Any) -> None:
-        """把某子策略提交的订单逐笔复刻到真实账户：成交量 ×该子策略权重 → 整手。
+        """把某子策略提交的订单逐笔复刻到真实账户。
 
-        行为复制：每笔订单原样送达真实撮合器按相同时机独立撮合；不按子策略账户做加权净额。
+        缩放比 = 真实账户权益 × 该子策略权重 / 影子基准资金（子策略定仓所依据的全额，1,000,000），
+        再 ``int(volume × 缩放比) // 100 * 100`` 取整手。行为复制：每笔订单原样送达真实撮合器按相同时机独立成交。
         """
-        if self.real_matcher is None or not requests:
+        if self.real_matcher is None or self.real_account is None or not requests:
+            return
+        if self._shadow_capital <= 0:
             return
         weight = self.mind.current_weights.get(strategy_name, 0.0)
         if weight <= 0:
             return
+        scale = self.real_account.total_equity * weight / self._shadow_capital
         scaled: List[Any] = []
         for request in requests:
             volume = getattr(request, "volume", None)
             if volume is None or volume <= 0:
                 continue
-            replicated = int(volume * weight) // 100 * 100
+            replicated = int(volume * scale) // 100 * 100
             if replicated <= 0:
                 continue
             scaled.append(replace(request, volume=replicated))
@@ -85,8 +90,9 @@ class BaseStream:
         self.real_account = account
         self.shadow_accounts.clear()
         self._prev_substrategy_equity.clear()
-        # 每个子策略按与真实账户相同的全额资金独立跑（"统一"口径）；复刻时再乘子策略权重。
+        # 每个子策略按与真实账户相同的全额资金独立跑（"统一"口径）；复刻时再按真实权益×权重缩放。
         initial = account.total_equity
+        self._shadow_capital = initial
         for name, strategy in self.strategies.items():
             shadow = self._new_shadow_account(account, initial)
             strategy.set_account(shadow)
