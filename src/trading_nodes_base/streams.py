@@ -34,6 +34,7 @@ class BaseStream:
         self.real_account: Any = None
         self.real_matcher: Any = None
         self._shadow_capital: float = 0.0
+        self._child_open_equity: Dict[str, float] = {}
         self._skip_children: set[str] = set()
         self._current_date: Optional[datetime] = None
         self._live_order_executor: Optional[Callable[[List[tuple]], None]] = None
@@ -55,17 +56,18 @@ class BaseStream:
     def replicate_orders(self, strategy_name: str, requests: List[Any], trade_date: Any) -> None:
         """把某子策略提交的订单逐笔复刻到真实账户。
 
-        缩放比 = 真实账户权益 × 该子策略权重 / 影子基准资金（子策略定仓所依据的全额，1,000,000），
-        再 ``int(volume × 缩放比) // 100 * 100`` 取整手。行为复制：每笔订单原样送达真实撮合器按相同时机独立成交。
+        缩放比 = 真实账户权益 × 该子策略权重 / 子账户当日日初权益，再 ``int(volume × 缩放比) // 100 * 100`` 取整手。
+        行为复制：每笔订单原样送达真实撮合器按相同时机独立成交。
         """
         if self.real_matcher is None or self.real_account is None or not requests:
             return
-        if self._shadow_capital <= 0:
+        base = self._child_open_equity.get(strategy_name) or self._shadow_capital
+        if not base or base <= 0:
             return
         weight = self.mind.current_weights.get(strategy_name, 0.0)
         if weight <= 0:
             return
-        scale = self.real_account.total_equity * weight / self._shadow_capital
+        scale = self.real_account.total_equity * weight / base
         scaled: List[Any] = []
         for request in requests:
             volume = getattr(request, "volume", None)
@@ -98,6 +100,7 @@ class BaseStream:
             strategy.set_account(shadow)
             self.shadow_accounts[name] = shadow
             self._prev_substrategy_equity[name] = initial
+            self._child_open_equity[name] = initial
 
     def get_return_history(self, strategy_name: str, lookback: Optional[int] = None) -> Optional[pd.Series]:
         history = self._substrategy_return_history.get(strategy_name)
@@ -137,6 +140,10 @@ class BaseStream:
         return queries
 
     def on_daily(self, market_data: Optional[Dict[str, Any]] = None) -> None:
+        # 日初快照各子账户权益：复刻缩放比的分母（子账户当日日初权益）
+        self._child_open_equity = {
+            name: account.total_equity for name, account in self.shadow_accounts.items()
+        }
         for strategy in self.strategies.values():
             if strategy.strategy_name not in self._skip_children and not strategy._daily_pipeline_triggered:
                 strategy._run_daily_pipeline()
