@@ -23,7 +23,7 @@ from trading_nodes_base.factors import (
     validate_selection_output,
     winsorize_and_zscore,
 )
-from trading_nodes_base.types import KlineBar, RiskSignal, SignalIntent, ExecutionRequest, normalize_frequency
+from trading_nodes_base.types import KlineBar, RiskSignal, SignalIntent, ExecutionRequest, ExecutionMode, normalize_frequency
 
 
 @dataclass(frozen=True)
@@ -678,7 +678,12 @@ class BaseTimeSelection(BaseComponent):
             context = [item for item in self.pending_intents if item.code == code]
             outputs = self._validate_factor_output(factor, factor.on_tick(tick, tuple(context)), SignalIntent)
             if outputs:
-                requests.extend(self.convert_intents(outputs, tick.get("price")))
+                for request in self.convert_intents(outputs, tick.get("price")):
+                    # tick 因子为市价单：订单类型由择时器表达，成交时机由引擎决定
+                    requests.append(
+                        request if request.mode is not None
+                        else replace(request, mode=ExecutionMode.MARKET)
+                    )
         return requests
 
     def convert_intents(

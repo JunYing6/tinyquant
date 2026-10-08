@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest
 
 _MATCH_MODES = frozenset({"quote_or_last", "last_trade_only", "quote_only"})
+_TIMINGS = frozenset({"market", "limit", "next_bar_open", "next_bar_close"})
 
 
 class OrderStatus(StrEnum):
@@ -53,13 +54,17 @@ class MatchingEngine:
         event_sink: Callable[[Mapping[str, Any]], None] | None = None,
         match_mode: str = "quote_or_last",
         slippage: Callable[[float, str], float] | None = None,
+        default_timing: str | None = None,
     ) -> None:
         if match_mode not in _MATCH_MODES:
             raise ValueError(f"match_mode must be one of {sorted(_MATCH_MODES)}")
+        if default_timing is not None and default_timing not in _TIMINGS:
+            raise ValueError(f"default_timing must be one of {sorted(_TIMINGS)}")
         self._account_order = account_order
         self._event_sink = event_sink
         self._match_mode = match_mode
         self._slippage = slippage
+        self._default_timing = default_timing
         self._orders: dict[str, MatchingOrder] = {}
         self._pending: list[str] = []
         self._seq: dict[str, int] = {}
@@ -79,13 +84,22 @@ class MatchingEngine:
             }
         )
 
-    @staticmethod
-    def _infer_timing(request: ExecutionRequest) -> str:
+    def _resolve_timing(self, request: ExecutionRequest) -> str:
+        """决定订单的成交时机。
+
+        策略只表达订单类型（``mode``：市价/限价），不决定成交时机。
+        - 显式 ``timing``（引擎注入）优先；
+        - 限价 / 市价按 ``mode``；
+        - 裸信号单（无 mode）：套用引擎配置的 ``default_timing``；未配置时退回
+          独立撮合器的旧语义（带价即视为限价）。
+        """
+        if request.timing is not None:
+            return request.timing
         if request.mode is ExecutionMode.LIMIT:
             return "limit"
         if request.mode is ExecutionMode.MARKET or request.price <= 0:
             return "market"
-        return "limit"  # 带价无 mode 的请求按旧语义视为限价
+        return self._default_timing or "limit"
 
     def submit_requests(
         self, requests: list[ExecutionRequest], trade_date: Any
@@ -95,7 +109,7 @@ class MatchingEngine:
         for request in requests:
             if request.volume is None or request.volume <= 0:
                 continue
-            timing = request.timing or self._infer_timing(request)
+            timing = self._resolve_timing(request)
             order = MatchingOrder(
                 uuid.uuid4().hex,
                 request.code,

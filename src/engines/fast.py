@@ -18,6 +18,7 @@ from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
 
 _VALID_MODES = {"auto", "fast", "tick", "kline", "daily"}
+_VALID_TIMINGS = {"market", "limit", "next_bar_open", "next_bar_close"}
 
 
 class FastBacktestEngine:
@@ -25,9 +26,12 @@ class FastBacktestEngine:
                  initial_capital: float = 1_000_000, mode: str = "auto",
                  slippage: Mapping[str, Any] | SlippageModel | None = None,
                  order_cost: dict[str, float] | None = None, progress_bar: bool = True,
-                 progress_callback: Any = None, data_gateway: DataGateway | None = None) -> None:
+                 progress_callback: Any = None, data_gateway: DataGateway | None = None,
+                 execution_timing: str = "next_bar_open") -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
+        if execution_timing not in _VALID_TIMINGS:
+            raise ValueError(f"execution_timing must be one of {sorted(_VALID_TIMINGS)}")
         if data_gateway is None:
             raise ValueError("data_gateway is required")
         if initial_capital <= 0:
@@ -39,6 +43,7 @@ class FastBacktestEngine:
             raise ValueError("start_date must not be after end_date")
         self.initial_capital = float(initial_capital)
         self.data_gateway = data_gateway
+        self.execution_timing = execution_timing
         self.progress_bar = progress_bar
         self.progress_callback = progress_callback
         self.is_stream = isinstance(entity, BaseStream)
@@ -52,6 +57,7 @@ class FastBacktestEngine:
             strategy.tick_matcher = MatchingEngine(
                 strategy.account.order, strategy.handle_order_event,
                 slippage=self.slippage.apply,
+                default_timing=self.execution_timing,
             )
         self.trade_dates: list[str] = []
         self.equity_curve: list[dict[str, Any]] = []

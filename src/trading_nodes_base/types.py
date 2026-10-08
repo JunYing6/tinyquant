@@ -97,13 +97,10 @@ class SignalIntent:
     trigger_time: Any
     reason: str
     metadata: Mapping[str, Any] = field(default_factory=dict, hash=False)
-    execution_timing: str | None = None
 
     def __post_init__(self) -> None:
         _validate_action(self.action)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
-        if self.execution_timing not in (None, "open", "close"):
-            raise ValueError("execution_timing must be None, 'open', or 'close'")
 
 
 @dataclass(frozen=True)

@@ -67,10 +67,7 @@ def _request_from_dict(data: Mapping[str, Any]) -> ExecutionRequest:
 
 class BaseStrategy:
     tick_mode = False
-    execution_timing = "close"
     supports_fast_backtest = False
-    fast_buy_timing = "open"
-    fast_sell_timing = "open"
 
     def __init__(
         self,
@@ -281,20 +278,14 @@ class BaseStrategy:
         return intents
 
     def _materialize_kline_orders(self, intents: List[SignalIntent], bar: KlineBar) -> None:
-        """K线意图 → 带 ``next_bar_*`` 时机的订单，写入出站队列。
+        """K线意图 → 订单，写入出站队列。
 
-        因子只发裸信号；仓位由择时器 ``convert_intents`` 计算。风险缩放与
-        仓位→数量换算不在这一步做，统一交给 ``_dispatch_kline_orders``，与
-        tick 路径共用同一出站→提交模型。
+        因子只发裸信号；仓位由择时器 ``convert_intents`` 计算。成交时机不由策略
+        决定（订单不带 ``timing``），由执行端（引擎配置的撮合器）统一套用。
         """
-        timing_map = {"open": "next_bar_open", "close": "next_bar_close"}
         price = float(bar.close)
         for intent in intents:
-            timing = timing_map.get(
-                intent.execution_timing or self.execution_timing, "next_bar_open"
-            )
-            for order in self.timer.convert_intents([intent], price):
-                self._pending_orders.append(replace(order, timing=timing))
+            self._pending_orders.extend(self.timer.convert_intents([intent], price))
         consumed = {id(intent) for intent in intents}
         self.timer.pending_intents = [
             intent for intent in self.timer.pending_intents if id(intent) not in consumed
@@ -303,8 +294,8 @@ class BaseStrategy:
     def _dispatch_kline_orders(self, bar: KlineBar) -> None:
         """K线订单交手给执行端：撮合器（回测）或就地执行（无撮合器，如实盘）。
 
-        有撮合器时订单直接提交，由撮合器按 ``next_bar_*`` 时机在下一根 K 线
-        自主成交；不再经引擎二次转发。风险缩放与数量换算由
+        有撮合器时订单直接提交，由撮合器按自身配置的成交时机（如 ``next_bar_open``）
+        在下一根 K 线自主成交；不再经引擎二次转发。风险缩放与数量换算由
         ``_canonicalize_requests`` 统一套用，只发生一次。
         """
         price_dict = {bar.code: float(bar.close)}
