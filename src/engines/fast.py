@@ -94,6 +94,8 @@ class FastBacktestEngine:
                 execution_delay=self.execution_delay,
             ))
         self.trade_dates: list[str] = []
+        self._limits_by_day: dict[str, dict[str, tuple[float, float]]] = {}
+        self._limits_loaded = False
         self.equity_curve: list[dict[str, Any]] = []
         self.daily_positions: list[dict[str, Any]] = []
         self.member_curve: list[dict[str, Any]] = []
@@ -138,7 +140,11 @@ class FastBacktestEngine:
             raise DataContractError(f"{batch.dataset} batch must be complete and fully consumed (request_id={batch.request_id})", dataset=batch.dataset, request_id=batch.request_id)
         bars = [record for record in batch.records if isinstance(record, Bar)]
         price_dict = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
+        open_dict = {bar.instrument_id: float(bar.open) for bar in bars if bar.instrument_id is not None}
         active = self._day_feed_codes()
+        # 盘前：注入当日涨跌停价 → 开盘调仓（按开盘价结算开盘池）
+        self._inject_price_limits(session, sorted(set(open_dict) | self._active_codes()))
+        self._settle_rebalance(open_dict, open_pool=True)
         # 统一事件流：先喂每日 bar（撮合 + K线信号），再视策略需要补 tick
         for bar in bars:
             if active and bar.instrument_id and bar.instrument_id not in active:
@@ -149,7 +155,9 @@ class FastBacktestEngine:
         if any(getattr(factor, "execution_role", "") != "intent_executor" for strategy in self._strategies for factor in strategy.timer.tick_factors):
             tick_prices = self._run_tick_replay(session, price_dict, active)
             ticked = True
-        # 直接订单（策略 _pending_orders，price=0 的 MARKET 单）日终单独撮合
+        # 收盘：按收盘价（或末 tick）结算收盘池；日终 MARKET 单同样单独撮合
+        close_prices = tick_prices if tick_prices else price_dict
+        self._settle_rebalance(close_prices, open_pool=False)
         self._execute_pending_daily(price_dict, tick_prices)
         if ticked:
             self._adapter.flush_day(session.trading_date)
@@ -181,6 +189,71 @@ class FastBacktestEngine:
             slices.append((cur, nxt))
             cur = nxt
         return slices
+
+    def _inject_price_limits(self, session: Any, codes: list[str]) -> None:
+        """盘前从 ``market.daily_metric`` 取当日涨跌停价，注入各策略。
+
+        整个回测只读一次（按运行区间 + 首批活跃代码），按日缓存，避免逐日全表扫描。
+        """
+        if not codes:
+            return
+        if not self._limits_loaded:
+            self._limits_loaded = True
+            self._load_price_limits(session, codes)
+        limits = self._limits_by_day.get(session.trading_date.strftime("%Y%m%d"), {})
+        if limits:
+            for strategy in self._strategies:
+                strategy.set_price_limits(limits)
+
+    def _load_price_limits(self, session: Any, codes: list[str]) -> None:
+        tz = session.open.tzinfo
+        start = datetime.strptime(self.start_date, "%Y%m%d").replace(tzinfo=tz)
+        end = datetime.strptime(self.end_date, "%Y%m%d").replace(tzinfo=tz)
+        try:
+            batch = self.data_gateway.read(DataRequest(
+                dataset="market.daily_metric", instruments=tuple(codes),
+                start=start, end=end,
+            ))
+        except Exception:
+            return
+        for record in batch.records:
+            if not isinstance(record, Mapping):
+                continue
+            code, up, down, day = record.get("instrument_id"), record.get("up_limit"), record.get("down_limit"), record.get("trading_date")
+            if not (code and up and down and day is not None):
+                continue
+            key = day.strftime("%Y%m%d") if hasattr(day, "strftime") else str(day).replace("-", "")[:8]
+            self._limits_by_day.setdefault(key, {})[str(code)] = (float(up), float(down))
+
+    def _settle_rebalance(self, prices: dict[str, float], open_pool: bool) -> None:
+        """风控调仓：按目标比例产生订单，并按 open/close 价单独结算对应订单池。
+
+        开盘侧（open_pool=True）按开盘价结算开盘池；收盘侧按收盘价（或末 tick）结算收盘池。
+        `rebalance_to_risk` 同时会把卖出排入开盘池（次日结算）、买入排入收盘池（当日结算）。
+        """
+        for strategy in self._strategies:
+            if strategy.risk_ctrl is None:
+                continue
+            strategy.rebalance_to_risk(getattr(strategy.risk_ctrl, "target_position_ratio", 1.0))
+            pool = strategy._open_orders if open_pool else strategy._close_orders
+            if not pool:
+                continue
+            orders: list[tuple] = []
+            for request in pool:
+                price = prices.get(request.code)
+                if not price or price <= 0 or request.volume is None or request.volume <= 0:
+                    continue
+                price = self.slippage.apply(float(price), request.action)
+                signed = request.volume if request.action == "BUY" else -request.volume
+                orders.append((strategy._current_date, request.time, request.code, price, signed, "n"))
+            if open_pool:
+                strategy._open_orders = []
+            else:
+                strategy._close_orders = []
+            if orders:
+                strategy.account.order(orders)
+                if self.is_stream:
+                    self.entity.replicate_close_orders(strategy.strategy_name, orders)
 
     def _execute_pending_daily(self, price_dict: dict[str, float], tick_prices: dict[str, float] | None = None) -> None:
         # 仅剩 price=0 的 MARKET 单（策略自定义日终单 / 风控清仓）单独撮合：
