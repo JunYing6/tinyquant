@@ -868,6 +868,37 @@ def test_rebalance_gap_uses_real_holdings() -> None:
     assert strategy.rebalance_gap(0.0) == {"000001.SZ": -400}  # 应有0    - 实持400 -> 卖
 
 
+def test_rebalance_to_risk_routes_gap_to_pools_with_limit_prices() -> None:
+    factor = DirectTickFactor("rebal")
+    factor.volume = 1000
+    factor._set_target_codes({"000001.SZ"})
+    strategy = Strategy("rebal-strategy", timer=BaseTimeSelection("rebal-timer", [], [factor]))
+    account = FakeAccount(10_000.0)
+    strategy.set_account(account)
+    strategy._current_date = "20260930"
+    strategy.tick_matcher = FakeMatcher()
+    strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
+    account.positions["000001.SZ"] = 400
+    strategy.set_price_limits({"000001.SZ": (11.0, 9.0)})
+
+    # 不足：应有500 - 实持400 = +100 -> 收盘池买入（未立即），涨停价11
+    strategy.rebalance_to_risk(0.5)
+    assert [(o.code, o.action, o.price, o.volume) for o in strategy._close_orders] == [("000001.SZ", "BUY", 11.0, 100)]
+    assert strategy._open_orders == []
+
+    # 超额：应有0 - 实持400 = -400 -> 开盘池卖出，跌停价9
+    strategy.rebalance_to_risk(0.0)
+    assert [(o.code, o.action, o.price, o.volume) for o in strategy._open_orders] == [("000001.SZ", "SELL", 9.0, 400)]
+
+    # 置立即买：买单调到开盘池
+    strategy.rebalance_buy_immediate = True
+    strategy._open_orders.clear()
+    strategy._close_orders.clear()
+    strategy.rebalance_to_risk(1.0)  # +600
+    assert [(o.action, o.price, o.volume) for o in strategy._open_orders] == [("BUY", 11.0, 600)]
+    assert strategy._close_orders == []
+
+
 
 @pytest.mark.parametrize("terminal_status", ["CANCELLED", "EXPIRED"])
 def test_strategy_terminal_matcher_events_return_partial_remainder_idempotently(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.data import DataBatch
 from trading_nodes_base.requests import canonical_request, decode_routing, with_routing
@@ -83,6 +83,8 @@ def _request_from_dict(data: Mapping[str, Any]) -> ExecutionRequest:
 class BaseStrategy:
     tick_mode = False
     supports_fast_backtest = False
+    # 风偏恢复时是否立即买入（默认 False：不马上买，统一等到尾盘收盘池买入）
+    rebalance_buy_immediate = False
 
     def __init__(
         self,
@@ -112,6 +114,7 @@ class BaseStrategy:
         self._timer_orders: List[_TimerOrder] = []
         self._open_orders: List[ExecutionRequest] = []
         self._close_orders: List[ExecutionRequest] = []
+        self._price_limits: Dict[str, Tuple[float, float]] = {}
         self.tick_matcher: Any = None
         self._original_buy_targets: Dict[str, int] = {}
         self._tail_replenished: bool = False
@@ -398,6 +401,36 @@ class BaseStrategy:
             if delta:
                 gap[code] = delta
         return gap
+
+    def set_price_limits(self, limits: Dict[str, Tuple[float, float]]) -> None:
+        """注入当日各标的涨跌停价 ``{code: (up_limit, down_limit)}``（由引擎从日线指标取）。"""
+        self._price_limits = {code: (float(up), float(down)) for code, (up, down) in limits.items()}
+
+    def rebalance_to_risk(self, ratio: float) -> None:
+        """按风控目标比例调仓：超额→开盘池卖出（跌停价保证成交）；不足→收盘池买入（涨停价）。
+
+        买入默认**不立即**执行（尾盘收盘池统一买）；置 ``rebalance_buy_immediate=True`` 可改为开盘即买。
+        """
+        for code, delta in self.rebalance_gap(ratio).items():
+            up, down = self._price_limits.get(code, (0.0, 0.0))
+            if delta < 0:
+                if down <= 0:
+                    continue
+                volume = min(-delta, int(self.current_positions.get(code, 0)))
+                if volume <= 0:
+                    continue
+                self._open_orders.append(ExecutionRequest(
+                    code=code, action="SELL", time=self._current_date,
+                    price=float(down), volume=int(volume), reason="risk_rebalance_sell",
+                ))
+            else:
+                if up <= 0:
+                    continue
+                pool = self._open_orders if self.rebalance_buy_immediate else self._close_orders
+                pool.append(ExecutionRequest(
+                    code=code, action="BUY", time=self._current_date,
+                    price=float(up), volume=int(delta), reason="risk_rebalance_buy",
+                ))
 
     def _maybe_queue_tail_replenishment(self, tick: Dict[str, Any]) -> None:
         """End-of-day 补仓: top up toward the ORIGINAL timer target scaled by
