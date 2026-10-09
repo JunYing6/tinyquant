@@ -152,7 +152,7 @@ class FastBacktestEngine:
             self._adapter.feed_daily_bar(bar)
         ticked = False
         tick_prices: dict[str, float] | None = None
-        if any(getattr(factor, "execution_role", "") != "intent_executor" for strategy in self._strategies for factor in strategy.timer.tick_factors):
+        if self._needs_intraday():
             tick_prices = self._run_tick_replay(session, price_dict, active)
             ticked = True
         # 收盘：按收盘价（或末 tick）结算收盘池；日终 MARKET 单同样单独撮合
@@ -178,6 +178,19 @@ class FastBacktestEngine:
             if pool:
                 pools.extend(pool)
         return set(pools)
+
+    def _needs_intraday(self) -> bool:
+        """是否需要日内重放（喂 tick 给撮合器/风控）。
+
+        择时器含 tick 因子，**或风控器含 tick 因子**（日线择时 + 盘中风控）时为真。
+        """
+        for strategy in self._strategies:
+            for factor in strategy.timer.tick_factors:
+                if getattr(factor, "execution_role", "") != "intent_executor":
+                    return True
+            if strategy.risk_ctrl is not None and getattr(strategy.risk_ctrl, "risk_tick_factors", None):
+                return True
+        return False
 
     @staticmethod
     def _time_slices(start: Any, end: Any, minutes: int = 30) -> list[tuple[Any, Any]]:
