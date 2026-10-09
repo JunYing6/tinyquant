@@ -16,7 +16,7 @@ from engines.core.trading_adapter import TradingContractAdapter
 from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, ReplayClock, TradeTick, replay_events
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
-from trading_nodes_base.types import ExecutionMode
+from trading_nodes_base.types import ExecutionMode, normalize_frequency
 
 _VALID_MODES = {"auto", "fast", "tick", "kline", "daily"}
 _VALID_TIMINGS = {"market", "limit", "next_bar_open", "next_bar_close"}
@@ -155,6 +155,8 @@ class FastBacktestEngine:
         if self._needs_intraday():
             tick_prices = self._run_tick_replay(session, price_dict, active)
             ticked = True
+        # 日内风控 kline（含 30m 等）：喂 risk_ctrl.on_bar，风控变化即调仓
+        self._run_intraday_risk(session, active)
         # 收盘：按收盘价（或末 tick）结算收盘池；日终 MARKET 单同样单独撮合
         close_prices = tick_prices if tick_prices else price_dict
         self._settle_rebalance(close_prices, open_pool=False)
@@ -191,6 +193,55 @@ class FastBacktestEngine:
             if strategy.risk_ctrl is not None and getattr(strategy.risk_ctrl, "risk_tick_factors", None):
                 return True
         return False
+
+    @staticmethod
+    def _risk_factor_frequency(factor: Any) -> str:
+        return normalize_frequency(getattr(type(factor), "frequency", "1d"))
+
+    def _risk_intraday_frequencies(self) -> set[str]:
+        """所有风控日内 kline 因子（频率 <1d，如 30m）的频率集合。"""
+        freqs: set[str] = set()
+        for strategy in self._strategies:
+            risk = strategy.risk_ctrl
+            if risk is None:
+                continue
+            for factor in getattr(risk, "risk_kline_factors", []):
+                freq = self._risk_factor_frequency(factor)
+                if not freq.endswith("d"):
+                    freqs.add(freq)
+        return freqs
+
+    def _run_intraday_risk(self, session: Any, active: set[str] | None) -> None:
+        """把日内 kline bar 喂给风控（风控含 <1d kline 因子时）；风控值变化即触发调仓（超额开盘池即时卖）。
+
+        回测用历史日内 bar（per-day kline.parquet）；实盘由聚合器产出。买入仍留收盘池、尾盘结算。
+        """
+        freqs = self._risk_intraday_frequencies()
+        if not freqs:
+            return
+        codes = tuple(sorted(active)) if active else None
+        last_prices: dict[str, float] = {}
+        for freq in sorted(freqs):
+            try:
+                batch = self.data_gateway.read(DataRequest(
+                    dataset="market.bar", instruments=codes,
+                    start=session.open, end=session.close, frequency=freq, price_basis="raw",
+                ))
+            except Exception:
+                continue
+            bars = sorted((r for r in batch.records if isinstance(r, Bar)), key=lambda b: b.interval_end)
+            for bar in bars:
+                if bar.instrument_id:
+                    last_prices[bar.instrument_id] = float(bar.close)
+                for strategy in self._strategies:
+                    risk = strategy.risk_ctrl
+                    if risk is None:
+                        continue
+                    strategy_freqs = {self._risk_factor_frequency(f) for f in getattr(risk, "risk_kline_factors", [])}
+                    if freq not in strategy_freqs:
+                        continue
+                    strategy._apply_risk_decision(risk.on_bar(bar))
+                self._settle_rebalance(last_prices, open_pool=True)
 
     @staticmethod
     def _time_slices(start: Any, end: Any, minutes: int = 30) -> list[tuple[Any, Any]]:
@@ -252,17 +303,19 @@ class FastBacktestEngine:
             if not pool:
                 continue
             orders: list[tuple] = []
+            kept: list[Any] = []
             for request in pool:
                 price = prices.get(request.code)
                 if not price or price <= 0 or request.volume is None or request.volume <= 0:
+                    kept.append(request)
                     continue
                 price = self.slippage.apply(float(price), request.action)
                 signed = request.volume if request.action == "BUY" else -request.volume
                 orders.append((strategy._current_date, request.time, request.code, price, signed, "n"))
             if open_pool:
-                strategy._open_orders = []
+                strategy._open_orders = kept
             else:
-                strategy._close_orders = []
+                strategy._close_orders = kept
             if orders:
                 strategy.account.order(orders)
                 if self.is_stream:

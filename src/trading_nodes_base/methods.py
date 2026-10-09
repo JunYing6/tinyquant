@@ -886,7 +886,10 @@ class BaseRiskControl(BaseComponent):
 
     def on_bar(self, bar: KlineBar) -> RiskDecision:
         signals: List[RiskSignal] = []
+        bar_frequency = normalize_frequency(bar.frequency)
         for factor in self.risk_kline_factors:
+            if normalize_frequency(getattr(type(factor), "frequency", "1d")) != bar_frequency:
+                continue  # 只喂频率匹配的风险因子（日线因子不处理日内 bar）
             output = factor.on_bar(bar)
             signals.extend(output if isinstance(output, list) else [output])
         self._update_decision_from_signals(signals)

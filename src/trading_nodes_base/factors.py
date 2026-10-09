@@ -470,6 +470,11 @@ class RiskKlineFactor(StreamFactor):
     _fixed_factor_kind = "risk_kline"
     factor_kind = "risk_kline"
     output_schema = "risk_signal"
+    frequency = "1d"
+
+    def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(factor_name, params)
+        normalize_frequency(type(self).frequency)
 
     def on_bar(self, bar: KlineBar) -> List[RiskSignal]:
         return []
