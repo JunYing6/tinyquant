@@ -13,6 +13,7 @@ from engines.core.performance import compute_stats
 from engines.core.pipeline import DataProviderError, UnifiedDataPipeline
 from engines.core.slippage import SlippageModel
 from engines.core.trading_adapter import TradingContractAdapter
+from engines.core.subscriptions import KIND_TICK, StreamRegistry, SubscriptionTracker, kline_kind
 from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, PRIORITY_SCHEDULED, SimulationClock, TradeTick, replay_events
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
@@ -37,9 +38,9 @@ class _MirrorMatcher:
         self._stream = stream
         self._strategy_name = strategy_name
 
-    def submit_requests(self, requests: list[Any], trade_date: Any) -> Any:
-        result = self._inner.submit_requests(requests, trade_date)
-        self._stream.replicate_orders(self._strategy_name, requests, trade_date)
+    def submit_requests(self, requests: list[Any], trade_date: Any, frequency: str | None = None) -> Any:
+        result = self._inner.submit_requests(requests, trade_date, frequency)
+        self._stream.replicate_orders(self._strategy_name, requests, trade_date, frequency)
         return result
 
     def __getattr__(self, name: str) -> Any:
@@ -81,6 +82,7 @@ class FastBacktestEngine:
         self.slippage = self._init_slippage(slippage)
         self.account = Account(self.initial_capital, order_cost)
         entity.set_account(self.account)
+        self._registry = StreamRegistry()
         self._adapter = TradingContractAdapter(entity)
         self._adapter.set_risk_bar_sink(self._on_risk_bar)
         self._pipeline = UnifiedDataPipeline(entity, data_gateway, self._adapter)
@@ -90,6 +92,7 @@ class FastBacktestEngine:
                 slippage=self.slippage.apply,
                 default_timing=self.execution_timing,
                 execution_delay=self.execution_delay,
+                tracker=SubscriptionTracker(self._registry, f"matcher:{strategy.strategy_name}"),
             )
             strategy.tick_matcher = _MirrorMatcher(inner, entity, strategy.strategy_name) if self.is_stream else inner
         if self.is_stream:
@@ -98,6 +101,7 @@ class FastBacktestEngine:
                 slippage=self.slippage.apply,
                 default_timing=self.execution_timing,
                 execution_delay=self.execution_delay,
+                tracker=SubscriptionTracker(self._registry, "matcher:real"),
             ))
         self.trade_dates: list[str] = []
         self._limits_by_day: dict[str, dict[str, tuple[float, float]]] = {}
@@ -135,7 +139,7 @@ class FastBacktestEngine:
         clock = SimulationClock(session, start=self._day_time(session, self._schedule_times["pre_open"]))
         self._pipeline.clock = clock
         self._intraday_prices = {}
-        state: dict[str, Any] = {"bars": [], "open": {}, "close": {}, "active": set(), "tick": {}, "ticked": False}
+        state: dict[str, Any] = {"bars": [], "open": {}, "close": {}, "active": set(), "base": set(), "tick": {}, "ticked": False, "aggregate_freqs": set()}
 
         def pre_market() -> None:
             """盘前数据整理：跑日线管道、读日线并喂入、注入涨跌停、排入日内 kline。"""
@@ -154,6 +158,7 @@ class FastBacktestEngine:
             state["open"] = {bar.instrument_id: float(bar.open) for bar in bars if bar.instrument_id is not None}
             state["close"] = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
             state["active"] = self._day_feed_codes()
+            state["base"] = set(codes)
             self._inject_price_limits(session, sorted(set(state["open"]) | self._active_codes()))
             for bar in bars:
                 if state["active"] and bar.instrument_id and bar.instrument_id not in state["active"]:
@@ -161,14 +166,17 @@ class FastBacktestEngine:
                 self._adapter.feed_daily_bar(bar)
             # 日内 kline（择时 ∪ 风控）走同一条路径：历史优先，缺者交 tick 聚合；
             # 有历史的频率置为外部来源（tick 重放不再聚合），随后按各自 end_time 排入时钟。
+            # 投喂按订阅过滤：某 code 的该频率无人订阅就不喂（用不到不空转）。
             historic = self._load_intraday_klines(session, codes)
             for frequency in historic:
                 self._adapter.mark_external_frequency(frequency)
+            self._sync_stream_subscriptions(state["base"])
             for frequency in sorted(historic):
                 for bar in historic[frequency]:
                     when = bar.end_time if isinstance(bar.end_time, datetime) else clock.now
-                    clock.push_kline(when, bar, lambda b=bar, f=frequency: self._adapter.feed_prebuilt_bars(f, [b]))
-            state["ticked"] = self._needs_intraday() or bool(self._intraday_frequencies() - set(historic))
+                    clock.push_kline(when, bar, lambda b=bar, f=frequency: self._emit_kline(f, b))
+            state["aggregate_freqs"] = self._intraday_frequencies() - set(historic)
+            state["ticked"] = self._needs_intraday() or bool(state["aggregate_freqs"])
 
         # 时间轴：盘前整理 → 开盘调仓（开盘价）→（日内 tick/kline）→ 尾盘调仓（末价/收盘价）
         clock.schedule(self._day_time(session, self._schedule_times["pre_open"]), pre_market, PRIORITY_SCHEDULED)
@@ -178,7 +186,7 @@ class FastBacktestEngine:
                        lambda: self._settle_rebalance(state["tick"] or state["close"], open_pool=False), PRIORITY_SCHEDULED)
         clock.run_until(session.open)  # 触发盘前 + 开盘调仓
         if state["ticked"]:
-            self._run_tick_replay(session, state["open"], state["active"], clock, state["tick"])
+            self._run_tick_replay(session, state["open"], clock, state["tick"], state["aggregate_freqs"])
         clock.flush()  # 收尾：最后一根 kline 与尾盘调仓
         self._execute_pending_daily(state["close"], state["tick"] or None)
         if state["ticked"]:
@@ -240,6 +248,46 @@ class FastBacktestEngine:
                 if not frequency.endswith("d"):
                     freqs.add(frequency)
         return freqs
+
+    def _sync_stream_subscriptions(self, base: set[str]) -> None:
+        """由择时器/风控器声明的数据需求（``data_required_pool``）重建流订阅。
+
+        按因子类型拆成 tick / kline:<freq> 两类；因子未声明目标（``_targets_configured``
+        为假）时视为需要全部 ``base``。撮合器订单的订阅由撮合器自行维护，不受影响。
+        """
+        tick_codes: set[str] = set()
+        kline: dict[str, set[str]] = {}
+        for strategy in self._strategies:
+            for factor in strategy.timer.kline_factors:
+                frequency = normalize_frequency(type(factor).frequency)
+                if not frequency.endswith("d"):
+                    kline.setdefault(frequency, set()).update(self._factor_subscription_codes(factor, base))
+            for factor in strategy.timer.tick_factors:
+                tick_codes.update(self._factor_subscription_codes(factor, base))
+            risk = strategy.risk_ctrl
+            if risk is None:
+                continue
+            for factor in getattr(risk, "risk_kline_factors", []):
+                frequency = normalize_frequency(getattr(type(factor), "frequency", "1d"))
+                if not frequency.endswith("d"):
+                    kline.setdefault(frequency, set()).update(self._factor_subscription_codes(factor, base))
+            for factor in getattr(risk, "risk_tick_factors", []):
+                tick_codes.update(self._factor_subscription_codes(factor, base))
+        self._registry.drop_source("factor")
+        self._registry.subscribe("factor", KIND_TICK, tick_codes)
+        for frequency, codes in kline.items():
+            self._registry.subscribe("factor", kline_kind(frequency), codes)
+
+    @staticmethod
+    def _factor_subscription_codes(factor: Any, base: set[str]) -> set[str]:
+        if getattr(factor, "_targets_configured", False):
+            return set(getattr(factor, "_target_codes", set()))
+        return set(base)
+
+    def _emit_kline(self, frequency: str, bar: KlineBar) -> None:
+        """按订阅投喂单根历史日内 kline：该 code 的该频率无人订阅则跳过。"""
+        if self._registry.is_subscribed(kline_kind(frequency), bar.code):
+            self._adapter.feed_prebuilt_bars(frequency, [bar])
 
     def _load_intraday_klines(self, session: Any, codes: list[str]) -> dict[str, list[KlineBar]]:
         """读取各日内频率的历史 kline bar（优先数据源）；读不到的频率缺省，交给 tick 聚合。"""
@@ -362,12 +410,14 @@ class FastBacktestEngine:
                 if self.is_stream:
                     self.entity.replicate_close_orders(strategy.strategy_name, orders)
 
-    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], active: set[str] | None = None, clock: SimulationClock | None = None, last_prices: dict[str, float] | None = None, slice_minutes: int = 30) -> dict[str, float]:
+    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], clock: SimulationClock | None = None, last_prices: dict[str, float] | None = None, aggregate_freqs: set[str] | None = None, slice_minutes: int = 30) -> dict[str, float]:
         """按 30 分钟分片重放 tick，交给模拟时钟按时间派发（同刻 tick 先于 kline）。
 
+        每片只拉取**被订阅**的 code：tick 流订阅者 ∪（需 tick 聚合的 kline 频率订阅者）。
         ``last_prices`` 由调用方传入并被就地更新，使时钟上排定的尾盘调仓任务能读到最新价。
         """
         base = set(price_dict) | self._active_codes()
+        aggregate = set(aggregate_freqs or ())
         if last_prices is None:
             last_prices = {}
         if clock is None:
@@ -379,11 +429,12 @@ class FastBacktestEngine:
             self._adapter.feed_market_event(event)
 
         for start, end in self._time_slices(session.open, session.close, slice_minutes):
-            # 每片前重算活动池：因子 drop 掉的代码，本片起不再拉取
-            pool = set(self._day_feed_codes())
-            codes = sorted((pool & base) if pool else base)
-            if active:
-                codes = [c for c in codes if c in active]
+            # 每片前按当前订阅重算拉取范围：因子 drop / 订单成交都会收窄或放宽
+            self._sync_stream_subscriptions(base)
+            codes = set(self._registry.codes(KIND_TICK))
+            for frequency in aggregate:
+                codes |= self._registry.codes(kline_kind(frequency))
+            codes = sorted(codes & base)
             if not codes:
                 continue
             events = []

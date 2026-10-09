@@ -310,7 +310,7 @@ class BaseStrategy:
         """
         price_dict = {bar.code: float(bar.close)}
         if self.tick_matcher is not None:
-            self._submit_pending_to_matcher(price_dict)
+            self._submit_pending_to_matcher(price_dict, frequency=bar.frequency)
         else:
             self._execute_pending_orders(price_dict)
 
@@ -688,7 +688,7 @@ class BaseStrategy:
             return handle.get("order_id")
         return getattr(handle, "order_id", None)
 
-    def _submit_pending_to_matcher(self, price_dict: Dict[str, float]) -> None:
+    def _submit_pending_to_matcher(self, price_dict: Dict[str, float], frequency: Any = None) -> None:
         inflight_sell_codes = {
             order.request.code
             for orders in self._inflight_orders.values()
@@ -706,9 +706,14 @@ class BaseStrategy:
         if not canonical:
             return
         try:
-            result = self.tick_matcher.submit_requests(
-                [item.request for item in canonical], self._current_date
-            )
+            if frequency is None:
+                result = self.tick_matcher.submit_requests(
+                    [item.request for item in canonical], self._current_date
+                )
+            else:
+                result = self.tick_matcher.submit_requests(
+                    [item.request for item in canonical], self._current_date, frequency
+                )
         except Exception:
             return
         if isinstance(result, Mapping) or hasattr(result, "order_id"):

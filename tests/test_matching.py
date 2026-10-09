@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest
 from engines.core.matching import MatchingEngine
+from engines.core.subscriptions import KIND_TICK, StreamRegistry, SubscriptionTracker, kline_kind
 
 
 class Rec:
@@ -102,3 +103,64 @@ def test_execution_delay_fills_on_nth_tick_after_submit():
     assert m.match_event(tick("A", 15.0, ask=15.0, bid=14.9), "20260930") == []  # 第 1 个 tick
     m.match_event(tick("A", 16.0, ask=16.0, bid=15.9), "20260930")  # 第 2 个 tick -> 按 ask=16
     assert acct.fills and acct.fills[0][3] == 16.0
+
+
+def test_matcher_subscribes_tick_on_submit_and_releases_on_fill():
+    registry = StreamRegistry()
+    matcher = MatchingEngine(Rec().order, None, tracker=SubscriptionTracker(registry, "matcher:x"))
+
+    matcher.submit_requests([ExecutionRequest(code="A", action="BUY", time="t", volume=100, timing="market")], "20260930")
+    assert registry.codes(KIND_TICK) == {"A"}
+
+    matcher.match_event(tick("A", 10.0, ask=10.0), "20260930")
+    assert registry.codes(KIND_TICK) == set()
+
+
+def test_matcher_next_bar_subscribes_source_kline_frequency():
+    registry = StreamRegistry()
+    matcher = MatchingEngine(Rec().order, None, tracker=SubscriptionTracker(registry, "matcher:x"))
+
+    matcher.submit_requests(
+        [ExecutionRequest(code="A", action="BUY", time="t", volume=100, timing="next_bar_open")],
+        "20260930",
+        "30m",
+    )
+    assert registry.is_subscribed(kline_kind("30m"), "A")
+    assert registry.codes(KIND_TICK) == set()
+
+
+def test_matcher_releases_only_after_last_order_for_code_leaves():
+    registry = StreamRegistry()
+    matcher = MatchingEngine(Rec().order, None, tracker=SubscriptionTracker(registry, "matcher:x"))
+
+    matcher.submit_requests(
+        [
+            ExecutionRequest(code="A", action="BUY", time="t", volume=100, timing="market"),
+            ExecutionRequest(code="A", action="BUY", time="t", volume=100, timing="limit", price=1.0, mode=ExecutionMode.LIMIT),
+        ],
+        "20260930",
+    )
+    assert registry.is_subscribed(KIND_TICK, "A")
+
+    matcher.match_event(tick("A", 10.0, ask=10.0, bid=9.9), "20260930")  # 市价成交；限价 price<=1 不成交
+    assert registry.is_subscribed(KIND_TICK, "A")
+
+    remaining = matcher.pending_orders()
+    assert len(remaining) == 1
+    matcher.cancel(remaining[0].order_id)
+    assert not registry.is_subscribed(KIND_TICK, "A")
+
+
+def test_stream_registry_refcounts_sources_and_drops_source():
+    registry = StreamRegistry()
+    registry.subscribe("a", KIND_TICK, ["X", "Y"])
+    registry.subscribe("b", KIND_TICK, ["Y"])
+
+    registry.unsubscribe("a", KIND_TICK, ["Y"])
+    assert registry.codes(KIND_TICK) == {"X", "Y"}  # b 仍订阅 Y
+    registry.unsubscribe("a", KIND_TICK, ["X"])
+    assert registry.codes(KIND_TICK) == {"Y"}
+
+    registry.drop_source("b")
+    assert registry.codes(KIND_TICK) == set()
+    assert registry.kinds() == set()

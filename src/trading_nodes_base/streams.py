@@ -53,7 +53,7 @@ class BaseStream:
         """挂接真实账户的撮合器（逐笔复刻用）。"""
         self.real_matcher = matcher
 
-    def replicate_orders(self, strategy_name: str, requests: List[Any], trade_date: Any) -> None:
+    def replicate_orders(self, strategy_name: str, requests: List[Any], trade_date: Any, frequency: str | None = None) -> None:
         """把某子策略提交的订单逐笔复刻到真实账户。
 
         缩放比 = 真实账户权益 × 该子策略权重 / 子账户当日日初权益，再 ``int(volume × 缩放比) // 100 * 100`` 取整手。
@@ -78,7 +78,10 @@ class BaseStream:
                 continue
             scaled.append(replace(request, volume=replicated))
         if scaled:
-            self.real_matcher.submit_requests(scaled, trade_date)
+            if frequency is None:
+                self.real_matcher.submit_requests(scaled, trade_date)
+            else:
+                self.real_matcher.submit_requests(scaled, trade_date, frequency)
 
     def scale_close_orders(self, strategy_name: str, orders: List[tuple]) -> List[tuple]:
         """按复刻缩放比把某子策略的日终单换算成真实账户口径的订单元组。

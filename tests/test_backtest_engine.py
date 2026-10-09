@@ -11,7 +11,7 @@ from engines.fast import FastBacktestEngine
 from tools.data import Bar, DataContractError, DataRequest, InMemoryGateway, Session, TradeTick, TradingPhase
 from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
-from trading_nodes_base.methods import BaseTimeSelection
+from trading_nodes_base.methods import BaseStockPicking, BaseTimeSelection
 from trading_nodes_base.minds import BaseMind
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
@@ -300,3 +300,74 @@ def test_stream_engine_collects_member_curve() -> None:
     assert set(engine.member_curve[0]["members"].keys()) == {"s1", "s2"}
     assert set(engine.member_curve[0]["weights"].keys()) == {"s1", "s2"}
     assert engine.member_curve[-1]["members"]["s1"]["equity"] > 0
+
+
+class _BothPicking(BaseStockPicking):
+    def __init__(self, codes: list[str]) -> None:
+        import pandas as pd
+
+        self._pd = pd
+        self.codes = list(codes)
+        super().__init__("both", [], [], [])
+
+    def select_stocks(self, date: object) -> Any:
+        return self._pd.DataFrame({"asset": self.codes, "weight": [1.0 / len(self.codes)] * len(self.codes)})
+
+
+class _TargetedTickFactor(TickTimingFactor):
+    def __init__(self, codes: list[str]) -> None:
+        super().__init__("targeted-tick")
+        self._required = list(codes)
+        self.seen: list[str] = []
+
+    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
+        return []
+
+    def required_codes(self, pool=None, positions=None, account_info=None, **extra: Any) -> list[str]:
+        return list(self._required)
+
+    def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[SignalIntent]:
+        self.seen.append(tick.get("code"))
+        return []
+
+
+class _NarrowTickStrategy(BaseStrategy):
+    def __init__(self) -> None:
+        self.factor = _TargetedTickFactor(["000001.SZ"])
+        super().__init__(
+            "narrow",
+            selector=_BothPicking(["000001.SZ", "600000.SH"]),
+            timer=BaseTimeSelection("narrow-timer", [], [self.factor]),
+        )
+
+
+class _RecordingGateway(InMemoryGateway):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.reads: list[DataRequest] = []
+
+    def read(self, request: DataRequest) -> Any:
+        self.reads.append(request)
+        return super().read(request)
+
+
+def _trade(day: str, code: str, clock: str = "10:00:00", price: float = 10.0) -> TradeTick:
+    return TradeTick(schema_version="1", event_id=None, instrument_id=code, asset_type="equity", effective_time=_instant(day, clock), event_time=_instant(day, clock), available_at=None, trading_date=_instant(day).date(), source="test", quality="valid", metadata={}, event_type="trade", price=price, size=100.0, turnover=price * 100, side="UNKNOWN", sequence=None)
+
+
+def test_tick_replay_reads_only_subscribed_codes() -> None:
+    # 因子只声明需要 000001.SZ；股票池含 600000.SH，但无订阅 -> 不拉取该 code 的 tick
+    ticks = [_trade("20240102", "000001.SZ"), _trade("20240102", "600000.SH")]
+    gateway = _RecordingGateway(
+        bars=[_bar("20240102", 10.0, "000001.SZ"), _bar("20240102", 10.0, "600000.SH")],
+        events=ticks,
+        sessions=[_session("20240102")],
+    )
+    strategy = _NarrowTickStrategy()
+    engine = FastBacktestEngine(strategy, "20240102", "20240102", mode="tick", data_gateway=gateway, progress_bar=False)
+
+    engine.run()
+
+    tick_reads = [request for request in gateway.reads if request.dataset == "market.trade"]
+    assert tick_reads and all(request.instruments == ("000001.SZ",) for request in tick_reads)
+    assert set(strategy.factor.seen) == {"000001.SZ"}

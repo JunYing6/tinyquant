@@ -17,6 +17,8 @@ from typing import Any, Callable, Mapping
 
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest
 
+from engines.core.subscriptions import KIND_TICK, SubscriptionTracker, kline_kind
+
 _MATCH_MODES = frozenset({"quote_or_last", "last_trade_only", "quote_only"})
 _TIMINGS = frozenset({"market", "limit", "next_bar_open", "next_bar_close"})
 
@@ -43,6 +45,7 @@ class MatchingOrder:
     filled_volume: int = 0
     status: OrderStatus = OrderStatus.SUBMITTED
     reason: str = ""
+    stream_kind: str = ""
 
 
 class MatchingEngine:
@@ -56,6 +59,7 @@ class MatchingEngine:
         slippage: Callable[[float, str], float] | None = None,
         default_timing: str | None = None,
         execution_delay: int = 1,
+        tracker: SubscriptionTracker | None = None,
     ) -> None:
         if match_mode not in _MATCH_MODES:
             raise ValueError(f"match_mode must be one of {sorted(_MATCH_MODES)}")
@@ -69,10 +73,13 @@ class MatchingEngine:
         self._slippage = slippage
         self._default_timing = default_timing
         self._execution_delay = execution_delay
+        self._tracker = tracker
         self._orders: dict[str, MatchingOrder] = {}
         self._pending: list[str] = []
         self._bar_seq: dict[str, int] = {}
         self._tick_seq: dict[str, int] = {}
+        # 每 (kind, code) 的在途单计数：归零时才向 registry 退订
+        self._want_counts: dict[tuple[str, str], int] = {}
 
     def _emit(self, order: MatchingOrder, status: str, reason: str = "") -> None:
         if self._event_sink is None:
@@ -111,7 +118,7 @@ class MatchingEngine:
         return self._bar_seq if timing in ("next_bar_open", "next_bar_close") else self._tick_seq
 
     def submit_requests(
-        self, requests: list[ExecutionRequest], trade_date: Any
+        self, requests: list[ExecutionRequest], trade_date: Any, frequency: str | None = None
     ) -> list[MatchingOrder]:
         submitted: list[MatchingOrder] = []
         date_key = self._date_key(trade_date)
@@ -119,6 +126,7 @@ class MatchingEngine:
             if request.volume is None or request.volume <= 0:
                 continue
             timing = self._resolve_timing(request)
+            kind = self._order_stream_kind(timing, frequency)
             order = MatchingOrder(
                 uuid.uuid4().hex,
                 request.code,
@@ -128,12 +136,36 @@ class MatchingEngine:
                 request.price if timing == "limit" else None,
                 dict(self._counter_for(timing)),
                 date_key,
+                stream_kind=kind,
             )
             self._orders[order.order_id] = order
             self._pending.append(order.order_id)
+            self._want(order)
             self._emit(order, "SUBMITTED")
             submitted.append(order)
         return submitted
+
+    @staticmethod
+    def _order_stream_kind(timing: str, frequency: str | None) -> str:
+        if timing in ("next_bar_open", "next_bar_close"):
+            return kline_kind(frequency or "1d")
+        return KIND_TICK
+
+    def _want(self, order: MatchingOrder) -> None:
+        key = (order.stream_kind, order.code)
+        self._want_counts[key] = self._want_counts.get(key, 0) + 1
+        if self._tracker is not None:
+            self._tracker.want(order.stream_kind, [order.code])
+
+    def _release(self, order: MatchingOrder) -> None:
+        key = (order.stream_kind, order.code)
+        count = self._want_counts.get(key, 0) - 1
+        if count > 0:
+            self._want_counts[key] = count
+            return
+        self._want_counts.pop(key, None)
+        if self._tracker is not None:
+            self._tracker.release(order.stream_kind, [order.code])
 
     def match_event(self, event: Any, trade_date: Any) -> list[MatchingOrder]:
         code = getattr(event, "instrument_id", None) or getattr(event, "code", None)
@@ -219,6 +251,7 @@ class MatchingEngine:
         order.reason = reason
         if order.order_id in self._pending:
             self._pending.remove(order.order_id)
+            self._release(order)
         self._emit(order, status, reason)
 
     def cancel(self, order_id: str) -> bool:
