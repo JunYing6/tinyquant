@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from tools.data.errors import DataContractError
 from typing import Any, Literal, Mapping, cast
@@ -13,13 +13,16 @@ from engines.core.performance import compute_stats
 from engines.core.pipeline import DataProviderError, UnifiedDataPipeline
 from engines.core.slippage import SlippageModel
 from engines.core.trading_adapter import TradingContractAdapter
-from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, ReplayClock, TradeTick, replay_events
+from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, PRIORITY_SCHEDULED, SimulationClock, TradeTick, replay_events
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
 from trading_nodes_base.types import ExecutionMode, KlineBar, normalize_frequency
 
 _VALID_MODES = {"auto", "fast", "tick", "kline", "daily"}
 _VALID_TIMINGS = {"market", "limit", "next_bar_open", "next_bar_close"}
+
+# 内置 A 股日程（可按 ``schedule`` 覆盖）：盘前数据整理、开盘调仓、尾盘调仓。
+_DEFAULT_SCHEDULE = {"pre_open": "08:30:00", "open_rebalance": "09:23:30", "close_rebalance": "14:57:00"}
 
 
 class _MirrorMatcher:
@@ -49,7 +52,8 @@ class FastBacktestEngine:
                  slippage: Mapping[str, Any] | SlippageModel | None = None,
                  order_cost: dict[str, float] | None = None, progress_bar: bool = True,
                  progress_callback: Any = None, data_gateway: DataGateway | None = None,
-                 execution_timing: str = "next_bar_open", execution_delay: int = 1) -> None:
+                 execution_timing: str = "next_bar_open", execution_delay: int = 1,
+                 schedule: Mapping[str, str] | None = None) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
         if execution_timing not in _VALID_TIMINGS:
@@ -60,6 +64,7 @@ class FastBacktestEngine:
             raise ValueError("data_gateway is required")
         if initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
+        self._schedule_times = {**_DEFAULT_SCHEDULE, **dict(schedule or {})}
         self.entity = entity
         self.start_date = self._normalize_date(start_date)
         self.end_date = self._normalize_date(end_date)
@@ -126,52 +131,57 @@ class FastBacktestEngine:
         return compute_stats(self.equity_curve, self.initial_capital, self.account.trade_log) if self.equity_curve else {}
 
     def _run_day(self, session: Any) -> None:
-        clock = ReplayClock(session)
-        self._pipeline.clock = clock
         date_key = session.trading_date.strftime("%Y%m%d")
-        self._pipeline.run_daily(date_key)
-        if isinstance(self.entity, BaseStream):
-            self.entity.on_daily({})
-        try:
-            # 读数范围 = 因子声明池(含池外基准/相关股) ∪ 持仓/股票池，缺一则回退全量
-            codes = sorted(set(self._day_feed_codes()) | self._active_codes())
-            batch = self.data_gateway.read(DataRequest(dataset="market.bar", instruments=tuple(codes) if codes else None, start=session.open, end=session.close, fields=("open", "high", "low", "close", "volume", "turnover"), frequency="1d", price_basis="raw"))
-        except Exception as error:
-            raise DataProviderError(f"market.bar read failed on {date_key}: {error}") from error
-        if not batch.complete or batch.next_cursor is not None:
-            raise DataContractError(f"{batch.dataset} batch must be complete and fully consumed (request_id={batch.request_id})", dataset=batch.dataset, request_id=batch.request_id)
-        bars = [record for record in batch.records if isinstance(record, Bar)]
-        price_dict = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
-        open_dict = {bar.instrument_id: float(bar.open) for bar in bars if bar.instrument_id is not None}
-        active = self._day_feed_codes()
-        # 盘中日内 kline（择时 ∪ 风控）走同一条路径：历史数据优先，缺者交 tick 聚合。
-        # 有历史的频率先置为外部来源（tick 重放不再聚合它），重放后再按序投喂历史 bar。
-        historic = self._load_intraday_klines(session, list(codes))
-        for frequency in historic:
-            self._adapter.mark_external_frequency(frequency)
+        clock = SimulationClock(session, start=self._day_time(session, self._schedule_times["pre_open"]))
+        self._pipeline.clock = clock
         self._intraday_prices = {}
-        # 盘前：注入当日涨跌停价 → 开盘调仓（按开盘价结算开盘池）
-        self._inject_price_limits(session, sorted(set(open_dict) | self._active_codes()))
-        self._settle_rebalance(open_dict, open_pool=True)
-        # 统一事件流：先喂每日 bar（撮合 + K线信号），再视策略需要补 tick
-        for bar in bars:
-            if active and bar.instrument_id and bar.instrument_id not in active:
-                continue  # 因子已 drop：跳过该标的数据（流式提速）
-            self._adapter.feed_daily_bar(bar)
-        ticked = False
-        tick_prices: dict[str, float] | None = None
-        needs_aggregation = self._intraday_frequencies() - set(historic)
-        if self._needs_intraday() or needs_aggregation:
-            tick_prices = self._run_tick_replay(session, price_dict, active)
-            ticked = True
-        # 历史日内 kline 按序投喂：经聚合器 → on_kline_bar（风控 + 择时），风控 bar 触发调仓结算
-        for frequency in sorted(historic):
-            self._adapter.feed_prebuilt_bars(frequency, historic[frequency])
-        # 收盘：按收盘价（或末 tick）结算收盘池；日终 MARKET 单同样单独撮合
-        close_prices = tick_prices if tick_prices else price_dict
-        self._settle_rebalance(close_prices, open_pool=False)
-        self._execute_pending_daily(price_dict, tick_prices)
-        if ticked:
+        state: dict[str, Any] = {"bars": [], "open": {}, "close": {}, "active": set(), "tick": {}, "ticked": False}
+
+        def pre_market() -> None:
+            """盘前数据整理：跑日线管道、读日线并喂入、注入涨跌停、排入日内 kline。"""
+            self._pipeline.run_daily(date_key)
+            if isinstance(self.entity, BaseStream):
+                self.entity.on_daily({})
+            try:
+                codes = sorted(set(self._day_feed_codes()) | self._active_codes())
+                batch = self.data_gateway.read(DataRequest(dataset="market.bar", instruments=tuple(codes) if codes else None, start=session.open, end=session.close, fields=("open", "high", "low", "close", "volume", "turnover"), frequency="1d", price_basis="raw"))
+            except Exception as error:
+                raise DataProviderError(f"market.bar read failed on {date_key}: {error}") from error
+            if not batch.complete or batch.next_cursor is not None:
+                raise DataContractError(f"{batch.dataset} batch must be complete and fully consumed (request_id={batch.request_id})", dataset=batch.dataset, request_id=batch.request_id)
+            bars = [record for record in batch.records if isinstance(record, Bar)]
+            state["bars"] = bars
+            state["open"] = {bar.instrument_id: float(bar.open) for bar in bars if bar.instrument_id is not None}
+            state["close"] = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
+            state["active"] = self._day_feed_codes()
+            self._inject_price_limits(session, sorted(set(state["open"]) | self._active_codes()))
+            for bar in bars:
+                if state["active"] and bar.instrument_id and bar.instrument_id not in state["active"]:
+                    continue  # 因子已 drop：跳过该标的数据（流式提速）
+                self._adapter.feed_daily_bar(bar)
+            # 日内 kline（择时 ∪ 风控）走同一条路径：历史优先，缺者交 tick 聚合；
+            # 有历史的频率置为外部来源（tick 重放不再聚合），随后按各自 end_time 排入时钟。
+            historic = self._load_intraday_klines(session, codes)
+            for frequency in historic:
+                self._adapter.mark_external_frequency(frequency)
+            for frequency in sorted(historic):
+                for bar in historic[frequency]:
+                    when = bar.end_time if isinstance(bar.end_time, datetime) else clock.now
+                    clock.push_kline(when, bar, lambda b=bar, f=frequency: self._adapter.feed_prebuilt_bars(f, [b]))
+            state["ticked"] = self._needs_intraday() or bool(self._intraday_frequencies() - set(historic))
+
+        # 时间轴：盘前整理 → 开盘调仓（开盘价）→（日内 tick/kline）→ 尾盘调仓（末价/收盘价）
+        clock.schedule(self._day_time(session, self._schedule_times["pre_open"]), pre_market, PRIORITY_SCHEDULED)
+        clock.schedule(self._day_time(session, self._schedule_times["open_rebalance"]),
+                       lambda: self._settle_rebalance(state["open"], open_pool=True), PRIORITY_SCHEDULED)
+        clock.schedule(self._day_time(session, self._schedule_times["close_rebalance"]),
+                       lambda: self._settle_rebalance(state["tick"] or state["close"], open_pool=False), PRIORITY_SCHEDULED)
+        clock.run_until(session.open)  # 触发盘前 + 开盘调仓
+        if state["ticked"]:
+            self._run_tick_replay(session, state["open"], state["active"], clock, state["tick"])
+        clock.flush()  # 收尾：最后一根 kline 与尾盘调仓
+        self._execute_pending_daily(state["close"], state["tick"] or None)
+        if state["ticked"]:
             self._adapter.flush_day(session.trading_date)
         else:
             for strategy in self._strategies:
@@ -179,8 +189,19 @@ class FastBacktestEngine:
                     strategy.tick_matcher.expire_day(session.trading_date)
             if self.is_stream and self.entity.real_matcher is not None:
                 self.entity.real_matcher.expire_day(session.trading_date)
-        self._settle_day(price_dict)
-        self._record_day(date_key, price_dict)
+        self._settle_day(state["close"])
+        self._record_day(date_key, state["close"])
+
+    @staticmethod
+    def _day_time(session: Any, spec: str | datetime) -> datetime:
+        if isinstance(spec, datetime):
+            return spec
+        parts = spec.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        second = int(parts[2]) if len(parts) > 2 else 0
+        return datetime.combine(session.trading_date, time(hour, minute, second), tzinfo=session.open.tzinfo)
+
 
     def _day_feed_codes(self) -> set[str]:
         """各策略 data_required_pool 的并集；空集表示不作限定（喂全部代码）。"""
@@ -341,9 +362,16 @@ class FastBacktestEngine:
                 if self.is_stream:
                     self.entity.replicate_close_orders(strategy.strategy_name, orders)
 
-    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], active: set[str] | None = None, slice_minutes: int = 30) -> dict[str, float]:
+    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], active: set[str] | None = None, clock: SimulationClock | None = None, last_prices: dict[str, float] | None = None, slice_minutes: int = 30) -> dict[str, float]:
+        """按 30 分钟分片重放 tick，交给模拟时钟按时间派发（同刻 tick 先于 kline）。
+
+        ``last_prices`` 由调用方传入并被就地更新，使时钟上排定的尾盘调仓任务能读到最新价。
+        """
         base = set(price_dict) | self._active_codes()
-        last_prices: dict[str, float] = {}
+        if last_prices is None:
+            last_prices = {}
+        if clock is None:
+            clock = SimulationClock(session)
 
         def feed(event: Any) -> None:
             if isinstance(event, TradeTick) and event.instrument_id and event.price:
@@ -365,7 +393,6 @@ class FastBacktestEngine:
                     raise DataContractError(f"{dataset} batch must be complete and fully consumed")
                 events.extend(batch.records)
             events.sort(key=lambda event: (event.event_time or datetime.min.replace(tzinfo=session.open.tzinfo), getattr(event, "sequence", 0) or 0))
-            clock = ReplayClock(session)
             replay_events(events, clock, feed)
         return last_prices
 

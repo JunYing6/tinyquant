@@ -67,8 +67,12 @@ from .quality import (
     validate_request,
 )
 from .replay import (
+    PRIORITY_KLINE,
+    PRIORITY_SCHEDULED,
+    PRIORITY_TICK,
     LiveClock,
     ReplayClock,
+    SimulationClock,
     deduplicate_events,
     normalize_trade_increment,
     replay_events,
@@ -123,6 +127,10 @@ __all__ = [
     "RecoveryPort",
     "RegisteredEvent",
     "ReplayClock",
+    "SimulationClock",
+    "PRIORITY_TICK",
+    "PRIORITY_KLINE",
+    "PRIORITY_SCHEDULED",
     "RouteOptions",
     "Scalar",
     "Session",

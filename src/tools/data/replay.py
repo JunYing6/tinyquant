@@ -31,6 +31,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import replace
 from datetime import datetime
+from heapq import heappop, heappush
 from typing import Callable, Iterator
 
 from .contracts import (
@@ -133,6 +134,91 @@ class LiveClock:
         """推进到某个观测时间戳，钳制以保持单调。"""
         if observed_time > self._now:
             self._now = observed_time
+
+    def close(self) -> None:
+        """幂等地关闭时钟（空操作；为生命周期对称性预留）。"""
+        self._closed = True
+
+
+# 同一时刻的触发优先级：tick < kline < 定时任务。数字越小越先触发。
+PRIORITY_TICK = 0
+PRIORITY_KLINE = 1
+PRIORITY_SCHEDULED = 2
+
+
+class SimulationClock:
+    """回测用的模拟时钟：合并已排程任务与数据事件，按 ``(time, priority, seq)`` 单调触发。
+
+    与 :class:`ReplayClock` 相比，它把"时间"从数据到达中解耦：调用方把数据事件
+    （tick/kline）与定时回调都排进同一时间轴，由时钟按序派发，从而保证
+
+    * 同一时刻**先 tick、再 kline、最后定时任务**（:data:`PRIORITY_TICK` /
+      :data:`PRIORITY_KLINE` / :data:`PRIORITY_SCHEDULED`）；
+    * :attr:`now` 严格单调——回拨抛 :class:`ValueError`，与 :class:`ReplayClock`
+      同样防止格式错误的流把时钟往回拨。
+
+    与 :func:`replay_events` 兼容：它调用 :meth:`advance` 推进时钟，本类会在
+    *严格早于* 目标时刻处先触发到期任务（因此同一时刻的 tick 会先于同级 kline
+    派发完），随后 :meth:`run_until` / :meth:`flush` 负责收尾。
+    """
+
+    def __init__(self, session: Session, start: datetime | None = None) -> None:
+        self.session = session
+        self._now = start if start is not None else session_open(session)
+        self._tasks: list[tuple[datetime, int, int, Callable[[], None]]] = []
+        self._seq = 0
+        self._closed = False
+
+    @property
+    def now(self) -> datetime:
+        return self._now
+
+    def as_of(self) -> datetime:
+        """返回当前时刻（同 :attr:`now`）。"""
+        return self._now
+
+    def schedule(self, when: datetime, callback: Callable[[], None], priority: int = PRIORITY_SCHEDULED) -> None:
+        """把回调排到 ``when`` 时刻；同一时刻按 ``priority`` 再按登记顺序触发。"""
+        if when is None:
+            raise ValueError("scheduled task requires a time")
+        heappush(self._tasks, (when, priority, self._seq, callback))
+        self._seq += 1
+
+    def push_tick(self, event, sink: Callable[[object], None]) -> None:
+        """把 tick 事件排到其 ``event_time``（优先于同级 kline）。"""
+        when = _event_time(event)
+        if when is None:
+            raise ValueError("tick requires an event_time")
+        self.schedule(when, lambda: sink(event), PRIORITY_TICK)
+
+    def push_kline(self, when: datetime, bar, sink: Callable[[object], None]) -> None:
+        """把 kline bar 排到 ``when``（优先于定时任务）。"""
+        self.schedule(when, lambda: sink(bar), PRIORITY_KLINE)
+
+    def advance(self, event_time: datetime) -> None:
+        """推进到 ``event_time``；先触发**严格早于**该时刻的到期任务。"""
+        if event_time < self._now:
+            raise ValueError(f"SimulationClock cannot move backwards: {event_time} < {self._now}")
+        self._fire(lambda when: when < event_time)
+        if event_time > self._now:
+            self._now = event_time
+
+    def run_until(self, end: datetime) -> None:
+        """推进到 ``end`` 并触发所有 ``<= end`` 的到期任务。"""
+        self._fire(lambda when: when <= end)
+        if end > self._now:
+            self._now = end
+
+    def flush(self) -> None:
+        """触发所有剩余任务（收尾），不再受时间上界约束。"""
+        self._fire(lambda when: True)
+
+    def _fire(self, predicate: Callable[[datetime], bool]) -> None:
+        while self._tasks and predicate(self._tasks[0][0]):
+            when, _priority, _seq, callback = heappop(self._tasks)
+            if when > self._now:
+                self._now = when
+            callback()
 
     def close(self) -> None:
         """幂等地关闭时钟（空操作；为生命周期对称性预留）。"""
@@ -442,7 +528,11 @@ __all__ = [
     "W_SEQUENCE_MISSING",
     "W_SESSION_RESET",
     "LiveClock",
+    "PRIORITY_KLINE",
+    "PRIORITY_SCHEDULED",
+    "PRIORITY_TICK",
     "ReplayClock",
+    "SimulationClock",
     "deduplicate_events",
     "normalize_trade_increment",
     "replay_events",

@@ -22,7 +22,11 @@ from tools.data import (
 )
 from tools.data.replay import (
     LiveClock,
+    PRIORITY_KLINE,
+    PRIORITY_SCHEDULED,
+    PRIORITY_TICK,
     ReplayClock,
+    SimulationClock,
     W_DATA_GAP,
     W_DUPLICATE_KEY,
     W_PHASE_SKIPPED,
@@ -550,3 +554,56 @@ def test_replay_plain_sink_receives_registered_event():
     sink = RecordingSink()
     replay_events([registered(event_type="announcement")], clock, sink)
     assert len(sink.events) == 1
+
+
+# ---------------------------------------------------------------------------
+# SimulationClock
+# ---------------------------------------------------------------------------
+
+
+def _timed(event_time: datetime) -> Any:
+    return type("Timed", (), {"event_time": event_time})()
+
+
+def test_simulation_clock_same_time_orders_tick_then_kline_then_scheduled():
+    clock = SimulationClock(make_session(), start=utc(2024, 1, 2, 9, 0))
+    log: list[str] = []
+    at = utc(2024, 1, 2, 10, 0)
+    clock.schedule(at, lambda: log.append("scheduled"), PRIORITY_SCHEDULED)
+    clock.push_kline(at, "K", lambda bar: log.append("kline"))
+    clock.push_tick(_timed(at), lambda event: log.append("tick"))
+
+    clock.run_until(at)
+    assert log == ["tick", "kline", "scheduled"]
+
+
+def test_simulation_clock_advance_fires_strictly_before_and_is_monotonic():
+    clock = SimulationClock(make_session(), start=utc(2024, 1, 2, 9, 0))
+    log: list[str] = []
+    at = utc(2024, 1, 2, 10, 0)
+    clock.schedule(at, lambda: log.append("at10"))
+
+    clock.advance(at)  # 严格早于 -> 不触发
+    assert log == []
+
+    clock.advance(utc(2024, 1, 2, 10, 0, 1))  # 越过 10:00 -> 触发
+    assert log == ["at10"]
+
+    with pytest.raises(ValueError):
+        clock.advance(utc(2024, 1, 2, 9, 0))
+
+
+def test_simulation_clock_flush_drains_remaining_in_time_order():
+    clock = SimulationClock(make_session(), start=utc(2024, 1, 2, 9, 0))
+    log: list[str] = []
+    clock.schedule(utc(2024, 1, 2, 14, 57), lambda: log.append("close"))
+    clock.schedule(utc(2024, 1, 2, 15, 0), lambda: log.append("bar"))
+    clock.flush()
+    assert log == ["close", "bar"]
+    assert clock.now == utc(2024, 1, 2, 15, 0)
+
+
+def test_simulation_clock_push_tick_requires_event_time():
+    clock = SimulationClock(make_session())
+    with pytest.raises(ValueError):
+        clock.push_tick(type("E", (), {"event_time": None})(), lambda event: None)
