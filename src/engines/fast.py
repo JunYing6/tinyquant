@@ -298,24 +298,7 @@ class FastBacktestEngine:
         for strategy in self._strategies:
             if strategy.risk_ctrl is None:
                 continue
-            strategy.rebalance_to_risk(getattr(strategy.risk_ctrl, "target_position_ratio", 1.0))
-            pool = strategy._open_orders if open_pool else strategy._close_orders
-            if not pool:
-                continue
-            orders: list[tuple] = []
-            kept: list[Any] = []
-            for request in pool:
-                price = prices.get(request.code)
-                if not price or price <= 0 or request.volume is None or request.volume <= 0:
-                    kept.append(request)
-                    continue
-                price = self.slippage.apply(float(price), request.action)
-                signed = request.volume if request.action == "BUY" else -request.volume
-                orders.append((strategy._current_date, request.time, request.code, price, signed, "n"))
-            if open_pool:
-                strategy._open_orders = kept
-            else:
-                strategy._close_orders = kept
+            orders = strategy.drain_risk_rebalance(prices, open_pool, self.slippage)
             if orders:
                 strategy.account.order(orders)
                 if self.is_stream:

@@ -80,20 +80,20 @@ class BaseStream:
         if scaled:
             self.real_matcher.submit_requests(scaled, trade_date)
 
-    def replicate_close_orders(self, strategy_name: str, orders: List[tuple]) -> None:
-        """把某子策略的日终单（收盘/末 tick 成交的价 0 市价单）按同一缩放比复刻到真实账户。
+    def scale_close_orders(self, strategy_name: str, orders: List[tuple]) -> List[tuple]:
+        """按复刻缩放比把某子策略的日终单换算成真实账户口径的订单元组。
 
-        与 ``replicate_orders`` 同一缩放口径，但这些单是"单独撮合"的既成交价，
-        因此直接在真实账户按同价成交，不再经撮合器。
+        与 ``replicate_orders`` 同一缩放口径：``真实权益 × 权重 / 子账户日初权益``。
+        不落账户，只返回换算后的元组，交由调用方决定投递路径。
         """
         if self.real_account is None or not orders:
-            return
+            return []
         base = self._child_open_equity.get(strategy_name) or self._shadow_capital
         if not base or base <= 0:
-            return
+            return []
         weight = self.mind.current_weights.get(strategy_name, 0.0)
         if weight <= 0:
-            return
+            return []
         scale = self.real_account.total_equity * weight / base
         scaled: List[tuple] = []
         for date, time, code, price, signed, order_type in orders:
@@ -101,6 +101,15 @@ class BaseStream:
             if volume <= 0:
                 continue
             scaled.append((date, time, code, float(price), volume if signed > 0 else -volume, order_type))
+        return scaled
+
+    def replicate_close_orders(self, strategy_name: str, orders: List[tuple]) -> None:
+        """把某子策略的日终单（收盘/末 tick 成交的价 0 市价单）按同一缩放比复刻到真实账户。
+
+        与 ``replicate_orders`` 同一缩放口径，但这些单是"单独撮合"的既成交价，
+        因此直接在真实账户按同价成交，不再经撮合器。
+        """
+        scaled = self.scale_close_orders(strategy_name, orders)
         if scaled:
             self.real_account.order(scaled)
 

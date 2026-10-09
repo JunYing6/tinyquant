@@ -418,30 +418,57 @@ class BaseStrategy:
         self._price_limits = {code: (float(up), float(down)) for code, (up, down) in limits.items()}
 
     def rebalance_to_risk(self, ratio: float) -> None:
-        """按风控目标比例调仓：超额→开盘池卖出（跌停价保证成交）；不足→收盘池买入（涨停价）。
+        """按风控目标比例调仓：超额→开盘池卖出；不足→收盘池买入。
 
-        买入默认**不立即**执行（尾盘收盘池统一买）；置 ``rebalance_buy_immediate=True`` 可改为开盘即买。
+        订单价记跌停/涨停价（有则用，无则记 0，由引擎按结算价成交）。买入默认
+        **不立即**执行（尾盘收盘池统一买）；置 ``rebalance_buy_immediate=True`` 可改为开盘即买。
         """
         for code, delta in self.rebalance_gap(ratio).items():
             up, down = self._price_limits.get(code, (0.0, 0.0))
             if delta < 0:
-                if down <= 0:
-                    continue
                 volume = min(-delta, int(self.current_positions.get(code, 0)))
                 if volume <= 0:
                     continue
                 self._open_orders.append(ExecutionRequest(
                     code=code, action="SELL", time=self._current_date,
                     price=float(down), volume=int(volume), reason="risk_rebalance_sell",
+                    mode=None if down > 0 else ExecutionMode.MARKET,
                 ))
             else:
-                if up <= 0:
-                    continue
                 pool = self._open_orders if self.rebalance_buy_immediate else self._close_orders
                 pool.append(ExecutionRequest(
                     code=code, action="BUY", time=self._current_date,
                     price=float(up), volume=int(delta), reason="risk_rebalance_buy",
+                    mode=None if up > 0 else ExecutionMode.MARKET,
                 ))
+
+    def drain_risk_rebalance(self, prices: Dict[str, float], open_pool: bool, slippage: Any = None) -> List[tuple]:
+        """按当前风控比例重算调仓，取出对应订单池（有价者），返回待执行订单元组。
+
+        开盘侧（``open_pool=True``）取开盘池（开盘/盘中即时卖）；收盘侧取收盘池
+        （尾盘买）。无价订单保留在池中待下次结算。执行由调用方（引擎）负责分发。
+        """
+        if self.risk_ctrl is None:
+            return []
+        self.rebalance_to_risk(getattr(self.risk_ctrl, "target_position_ratio", 1.0))
+        pool = self._open_orders if open_pool else self._close_orders
+        if not pool:
+            return []
+        orders: List[tuple] = []
+        kept: List[ExecutionRequest] = []
+        for request in pool:
+            price = prices.get(request.code)
+            if not price or price <= 0 or request.volume is None or request.volume <= 0:
+                kept.append(request)
+                continue
+            price = slippage.apply(float(price), request.action) if slippage is not None else float(price)
+            signed = request.volume if request.action == "BUY" else -request.volume
+            orders.append((self._current_date, request.time, request.code, price, signed, "n"))
+        if open_pool:
+            self._open_orders = kept
+        else:
+            self._close_orders = kept
+        return orders
 
     def _maybe_queue_tail_replenishment(self, tick: Dict[str, Any]) -> None:
         """End-of-day 补仓: top up toward the ORIGINAL timer target scaled by

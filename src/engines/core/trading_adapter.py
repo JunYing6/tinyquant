@@ -3,20 +3,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from engines.core.kline_aggregator import KlineAggregator
 from tools.data import Bar, MarketEvent, QuoteTick, RegisteredEvent, TradeTick
-from trading_nodes_base.types import KlineBar
+from trading_nodes_base.types import KlineBar, normalize_frequency
 from trading_nodes_base.market_events import market_event_from_dict
 from trading_nodes_base.strategies import BaseStrategy
-
-
-def _strategy_bar_callback(strategy: BaseStrategy):
-    def on_bar(bar: KlineBar) -> None:
-        strategy.on_kline_bar(bar)
-
-    return on_bar
 
 
 class TradingContractAdapter:
@@ -37,14 +30,54 @@ class TradingContractAdapter:
             raise TypeError("TradingContractAdapter requires a strategy or stream")
         self._current_date: date | None = None
         self._skip_names: set[str] = set()
-        self._aggregators = {
-            (strategy.strategy_name, frequency): KlineAggregator(
-                frequency,
-                _strategy_bar_callback(strategy),
-            )
-            for strategy in self.strategies
-            for frequency in strategy.timer.kline_frequencies
-        }
+        self.risk_bar_sink: Callable[[], None] | None = None
+        self._risk_enabled = False
+        self._aggregators: dict[tuple[str, str], KlineAggregator] = {}
+        self._rebuild_aggregators()
+
+    def _rebuild_aggregators(self) -> None:
+        aggregators: dict[tuple[str, str], KlineAggregator] = {}
+        for strategy in self.strategies:
+            frequencies = set(strategy.timer.kline_frequencies)
+            if self._risk_enabled:
+                frequencies |= self._risk_intraday_frequencies(strategy)
+            for frequency in frequencies:
+                aggregators[(strategy.strategy_name, frequency)] = KlineAggregator(
+                    frequency,
+                    self._bar_callback(strategy, frequency),
+                )
+        self._aggregators = aggregators
+
+    def _bar_callback(self, strategy: BaseStrategy, frequency: str):
+        def on_bar(bar: KlineBar) -> None:
+            strategy.on_kline_bar(bar)
+            if self.risk_bar_sink is not None and frequency in self._risk_intraday_frequencies(strategy):
+                self.risk_bar_sink()
+
+        return on_bar
+
+    def enable_risk_aggregation(self, sink: Callable[[], None] | None = None) -> None:
+        """让聚合器把 tick 聚合成风控日内 kline（如 30m）并喂 ``risk_ctrl.on_bar``。
+
+        每根风控 bar 完成后回调 ``sink``（引擎在该回调里结算开盘池）。回测走历史日内
+        bar，不启用此路径，避免与逐日读取重复喂风控。
+        """
+        self._risk_enabled = True
+        if sink is not None:
+            self.risk_bar_sink = sink
+        self._rebuild_aggregators()
+
+    @staticmethod
+    def _risk_intraday_frequencies(strategy: BaseStrategy) -> set[str]:
+        risk = getattr(strategy, "risk_ctrl", None)
+        if risk is None:
+            return set()
+        frequencies: set[str] = set()
+        for factor in getattr(risk, "risk_kline_factors", []):
+            frequency = normalize_frequency(getattr(type(factor), "frequency", "1d"))
+            if not frequency.endswith("d"):
+                frequencies.add(frequency)
+        return frequencies
 
     @property
     def frequencies(self) -> tuple[str, ...]:
@@ -123,7 +156,7 @@ class TradingContractAdapter:
         for strategy in self.strategies:
             if strategy.strategy_name in self._skip_names:
                 continue
-            if bar.frequency in strategy.timer.kline_frequencies:
+            if (strategy.strategy_name, bar.frequency) in self._aggregators:
                 self._match_strategy(strategy, bar)  # 先撮合（推进seq、成交上根bar订单）
                 matched = True
         if not matched:
@@ -132,7 +165,7 @@ class TradingContractAdapter:
         for strategy in self.strategies:
             if strategy.strategy_name in self._skip_names:
                 continue
-            if bar.frequency in strategy.timer.kline_frequencies:
+            if (strategy.strategy_name, bar.frequency) in self._aggregators:
                 strategy.on_kline_bar(bar)  # 再喂信号（提交下根bar订单）
 
     def feed_prebuilt_bars(self, frequency: str, bars: list[KlineBar]) -> None:

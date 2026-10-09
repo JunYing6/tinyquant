@@ -22,9 +22,9 @@ from tools.data import (
     TradingPhase,
     UnsupportedDatasetError,
 )
-from trading_nodes_base.factors import TickTimingFactor
-from trading_nodes_base.types import ExecutionMode, ExecutionRequest, SignalIntent
-from trading_nodes_base.methods import BaseStockPicking, BaseTimeSelection
+from trading_nodes_base.factors import RiskKlineFactor, TickTimingFactor
+from trading_nodes_base.types import ExecutionMode, ExecutionRequest, RiskSignal, SignalIntent
+from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection
 from trading_nodes_base.minds import BaseMind
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
@@ -488,3 +488,62 @@ def test_realtime_engine_rolls_day_with_settle_and_rebuilt_session() -> None:
     assert engine._current_date == datetime.now(timezone.utc).date() + timedelta(days=1)
     assert engine._clock.session.trading_date == datetime.now(timezone.utc).date() + timedelta(days=1)
     assert trader.orders == [("BUY", "000001.SZ", 100, 10.0)]
+
+
+class DropRatio30mRisk(RiskKlineFactor):
+    frequency = "30m"
+
+    def __init__(self) -> None:
+        super().__init__("drop-30m")
+        self.seen = 0
+
+    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[Any]:
+        return []
+
+    def on_bar(self, bar: Any) -> list[RiskSignal]:
+        self.seen += 1
+        return [RiskSignal(triggered=True, risk_kind="float", value=0.0)]
+
+
+class RiskLiveStrategy(BaseStrategy):
+    def __init__(self, code: str = "000001.SZ") -> None:
+        super().__init__(
+            "risk-live",
+            selector=DemoFixedPicking([code]),
+            timer=BaseTimeSelection("risk-live-timer", [], [DirectLiveBuyFactor()]),
+            risk_ctrl=BaseRiskControl("risk", risk_kline_factors=[DropRatio30mRisk()]),
+        )
+
+
+def test_realtime_engine_enables_risk_aggregation_and_aggregates_30m_from_ticks() -> None:
+    gateway = _day_gateway(_day())
+    trader = MockTradeExecutor()
+    strategy = RiskLiveStrategy()
+    engine = _engine(strategy, trader, gateway)
+
+    engine.start()
+    assert ("risk-live", "30m") in engine._adapter._aggregators
+
+    gateway.emit(_trade(clock="09:31:00"))
+    gateway.emit(_trade(clock="10:01:00"))  # cross into next 30m bucket -> emit 10:00 bar
+    engine.stop()
+
+    factor = strategy.risk_ctrl.risk_kline_factors[0]
+    assert factor.seen >= 1
+    assert strategy.risk_ctrl.target_position_ratio == 0.0
+
+
+def test_realtime_engine_settles_risk_rebalance_sell_on_intraday_risk_drop() -> None:
+    gateway = _day_gateway(_day())
+    trader = MockTradeExecutor()
+    trader.positions["000001.SZ"] = 400
+    strategy = RiskLiveStrategy()
+    engine = _engine(strategy, trader, gateway)
+
+    engine.start()
+    gateway.emit(_trade(clock="09:31:00"))  # timer buys 100 -> held 500, timer filled 100
+    gateway.emit(_trade(clock="10:01:00"))  # 30m bar -> risk 0 -> sell excess at last price
+    engine.stop()
+
+    sells = [order for order in trader.orders if order[0] == "SELL"]
+    assert sells == [("SELL", "000001.SZ", 500, 10.0)]

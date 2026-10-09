@@ -96,6 +96,7 @@ class RealTimeTradeEngine:
             self._pipeline.clock = self._clock
             self._run_daily_pipeline(self._session.trading_date)
             self._subscribe_streams()
+            self._adapter.enable_risk_aggregation(self._on_risk_bar)
             self._subscribed = True
             self._signal_thread = threading.Thread(target=self._signal_consumer, daemon=True)
             self._signal_thread.start()
@@ -249,6 +250,23 @@ class RealTimeTradeEngine:
                 price = (bid + ask) / 2 if bid is not None and ask is not None else bid or ask
         if isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
             self._last_prices[code] = float(price)
+
+    def _on_risk_bar(self) -> None:
+        """风控日内 kline bar 完成：按当前价结算开盘池（风控下降即时卖）。"""
+        self._settle_risk_rebalance(dict(self._last_prices))
+
+    def _settle_risk_rebalance(self, prices: dict[str, float]) -> None:
+        for strategy in self._strategies():
+            if strategy.risk_ctrl is None:
+                continue
+            orders = strategy.drain_risk_rebalance(prices, open_pool=True)
+            if not orders:
+                continue
+            strategy.account.order(orders)
+            if self.is_stream:
+                scaled = self.entity.scale_close_orders(strategy.strategy_name, orders)
+                if scaled:
+                    self._enqueue_orders(scaled)
 
     def _queue_position_delta(self, before: Mapping[str, int], event_time: datetime) -> None:
         date_key = self._current_date.strftime("%Y%m%d") if self._current_date else None
