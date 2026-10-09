@@ -64,6 +64,13 @@ class KlineAggregator:
     def is_prebuilt_mode(self) -> bool:
         return self._prebuilt_mode
 
+    def mark_external(self) -> None:
+        """声明本频率的 bar 由外部提供：停止从 tick 聚合，交由 ``feed_prebuilt_bar`` 投喂。"""
+        self._prebuilt_mode = True
+        self._intraday_buffers.clear()
+        self._daily_buffers.clear()
+        self._last_tick_seconds.clear()
+
     def feed_trade(self, trade: TradeTick) -> None:
         if not isinstance(trade, TradeTick):
             raise TypeError("KlineAggregator.feed_trade requires TradeTick")
@@ -100,6 +107,8 @@ class KlineAggregator:
             return
 
         end_time = self._intraday_end(minute)
+        if end_time is None:
+            return  # 非交易时段（集合竞价/盘后）tick 不纳入日内 K 线
         buffer = self._intraday_buffers.get(code)
         if buffer is not None and buffer.end_time != end_time:
             self._emit_intraday(code)
@@ -215,7 +224,7 @@ class KlineAggregator:
         if not isinstance(bar, Bar) or bar.frequency != "1d":
             raise ValueError("daily source must be a 1d Bar")
 
-    def _intraday_end(self, minute: int) -> str:
+    def _intraday_end(self, minute: int) -> str | None:
         interval = self._interval * (60 if self._unit == "h" else 1)
         for start, end in _SESSIONS:
             if start <= minute < end:
@@ -223,7 +232,7 @@ class KlineAggregator:
                 bucket_start = start + offset // interval * interval
                 bucket_end = min(bucket_start + interval, end)
                 return f"{bucket_end // 60:02d}:{bucket_end % 60:02d}:00"
-        raise ValueError("tick is outside the trading session")
+        return None
 
     @classmethod
     def _parse_tick(

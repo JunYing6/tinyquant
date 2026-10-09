@@ -16,7 +16,7 @@ from engines.core.trading_adapter import TradingContractAdapter
 from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, ReplayClock, TradeTick, replay_events
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
-from trading_nodes_base.types import ExecutionMode, normalize_frequency
+from trading_nodes_base.types import ExecutionMode, KlineBar, normalize_frequency
 
 _VALID_MODES = {"auto", "fast", "tick", "kline", "daily"}
 _VALID_TIMINGS = {"market", "limit", "next_bar_open", "next_bar_close"}
@@ -77,6 +77,7 @@ class FastBacktestEngine:
         self.account = Account(self.initial_capital, order_cost)
         entity.set_account(self.account)
         self._adapter = TradingContractAdapter(entity)
+        self._adapter.set_risk_bar_sink(self._on_risk_bar)
         self._pipeline = UnifiedDataPipeline(entity, data_gateway, self._adapter)
         for strategy in self._strategies:
             inner = MatchingEngine(
@@ -96,6 +97,7 @@ class FastBacktestEngine:
         self.trade_dates: list[str] = []
         self._limits_by_day: dict[str, dict[str, tuple[float, float]]] = {}
         self._limits_loaded = False
+        self._intraday_prices: dict[str, float] = {}
         self.equity_curve: list[dict[str, Any]] = []
         self.daily_positions: list[dict[str, Any]] = []
         self.member_curve: list[dict[str, Any]] = []
@@ -142,6 +144,12 @@ class FastBacktestEngine:
         price_dict = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
         open_dict = {bar.instrument_id: float(bar.open) for bar in bars if bar.instrument_id is not None}
         active = self._day_feed_codes()
+        # 盘中日内 kline（择时 ∪ 风控）走同一条路径：历史数据优先，缺者交 tick 聚合。
+        # 有历史的频率先置为外部来源（tick 重放不再聚合它），重放后再按序投喂历史 bar。
+        historic = self._load_intraday_klines(session, list(codes))
+        for frequency in historic:
+            self._adapter.mark_external_frequency(frequency)
+        self._intraday_prices = {}
         # 盘前：注入当日涨跌停价 → 开盘调仓（按开盘价结算开盘池）
         self._inject_price_limits(session, sorted(set(open_dict) | self._active_codes()))
         self._settle_rebalance(open_dict, open_pool=True)
@@ -152,11 +160,13 @@ class FastBacktestEngine:
             self._adapter.feed_daily_bar(bar)
         ticked = False
         tick_prices: dict[str, float] | None = None
-        if self._needs_intraday():
+        needs_aggregation = self._intraday_frequencies() - set(historic)
+        if self._needs_intraday() or needs_aggregation:
             tick_prices = self._run_tick_replay(session, price_dict, active)
             ticked = True
-        # 日内风控 kline（含 30m 等）：喂 risk_ctrl.on_bar，风控变化即调仓
-        self._run_intraday_risk(session, active)
+        # 历史日内 kline 按序投喂：经聚合器 → on_kline_bar（风控 + 择时），风控 bar 触发调仓结算
+        for frequency in sorted(historic):
+            self._adapter.feed_prebuilt_bars(frequency, historic[frequency])
         # 收盘：按收盘价（或末 tick）结算收盘池；日终 MARKET 单同样单独撮合
         close_prices = tick_prices if tick_prices else price_dict
         self._settle_rebalance(close_prices, open_pool=False)
@@ -194,54 +204,54 @@ class FastBacktestEngine:
                 return True
         return False
 
-    @staticmethod
-    def _risk_factor_frequency(factor: Any) -> str:
-        return normalize_frequency(getattr(type(factor), "frequency", "1d"))
-
-    def _risk_intraday_frequencies(self) -> set[str]:
-        """所有风控日内 kline 因子（频率 <1d，如 30m）的频率集合。"""
+    def _intraday_frequencies(self) -> set[str]:
+        """所有日内 kline 频率（择时 ∪ 风控，<1d，如 30m）。"""
         freqs: set[str] = set()
         for strategy in self._strategies:
+            for frequency in strategy.timer.kline_frequencies:
+                if not frequency.endswith("d"):
+                    freqs.add(frequency)
             risk = strategy.risk_ctrl
             if risk is None:
                 continue
             for factor in getattr(risk, "risk_kline_factors", []):
-                freq = self._risk_factor_frequency(factor)
-                if not freq.endswith("d"):
-                    freqs.add(freq)
+                frequency = normalize_frequency(getattr(type(factor), "frequency", "1d"))
+                if not frequency.endswith("d"):
+                    freqs.add(frequency)
         return freqs
 
-    def _run_intraday_risk(self, session: Any, active: set[str] | None) -> None:
-        """把日内 kline bar 喂给风控（风控含 <1d kline 因子时）；风控值变化即触发调仓（超额开盘池即时卖）。
-
-        回测用历史日内 bar（per-day kline.parquet）；实盘由聚合器产出。买入仍留收盘池、尾盘结算。
-        """
-        freqs = self._risk_intraday_frequencies()
-        if not freqs:
-            return
-        codes = tuple(sorted(active)) if active else None
-        last_prices: dict[str, float] = {}
-        for freq in sorted(freqs):
+    def _load_intraday_klines(self, session: Any, codes: list[str]) -> dict[str, list[KlineBar]]:
+        """读取各日内频率的历史 kline bar（优先数据源）；读不到的频率缺省，交给 tick 聚合。"""
+        instruments = tuple(codes) if codes else None
+        historic: dict[str, list[KlineBar]] = {}
+        for frequency in sorted(self._intraday_frequencies()):
             try:
                 batch = self.data_gateway.read(DataRequest(
-                    dataset="market.bar", instruments=codes,
-                    start=session.open, end=session.close, frequency=freq, price_basis="raw",
+                    dataset="market.bar", instruments=instruments,
+                    start=session.open, end=session.close, frequency=frequency, price_basis="raw",
                 ))
             except Exception:
                 continue
-            bars = sorted((r for r in batch.records if isinstance(r, Bar)), key=lambda b: b.interval_end)
-            for bar in bars:
-                if bar.instrument_id:
-                    last_prices[bar.instrument_id] = float(bar.close)
-                for strategy in self._strategies:
-                    risk = strategy.risk_ctrl
-                    if risk is None:
-                        continue
-                    strategy_freqs = {self._risk_factor_frequency(f) for f in getattr(risk, "risk_kline_factors", [])}
-                    if freq not in strategy_freqs:
-                        continue
-                    strategy._apply_risk_decision(risk.on_bar(bar))
-                self._settle_rebalance(last_prices, open_pool=True)
+            records = sorted((r for r in batch.records if isinstance(r, Bar)), key=lambda b: b.interval_end)
+            bars = [
+                KlineBar(
+                    code=bar.instrument_id or "",
+                    frequency=frequency,
+                    end_time=bar.interval_end,
+                    open=float(bar.open), high=float(bar.high), low=float(bar.low), close=float(bar.close),
+                    volume=float(bar.volume), amount=float(bar.turnover),
+                )
+                for bar in records
+            ]
+            if bars:
+                historic[frequency] = bars
+        return historic
+
+    def _on_risk_bar(self, bar: KlineBar) -> None:
+        """风控日内 kline bar 完成：按最新价结算开盘池（风控下降即时卖）。"""
+        if bar.code:
+            self._intraday_prices[bar.code] = float(bar.close)
+        self._settle_rebalance(self._intraday_prices, open_pool=True)
 
     @staticmethod
     def _time_slices(start: Any, end: Any, minutes: int = 30) -> list[tuple[Any, Any]]:

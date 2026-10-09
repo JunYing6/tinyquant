@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from engines.realtime import RealTimeTradeEngine
+from engines.core.trading_adapter import TradingContractAdapter
 from tools.data import (
     DataGapError,
     DataGapEvent,
@@ -22,8 +23,8 @@ from tools.data import (
     TradingPhase,
     UnsupportedDatasetError,
 )
-from trading_nodes_base.factors import RiskKlineFactor, TickTimingFactor
-from trading_nodes_base.types import ExecutionMode, ExecutionRequest, RiskSignal, SignalIntent
+from trading_nodes_base.factors import KlineTimingFactor, RiskKlineFactor, TickTimingFactor
+from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, RiskSignal, SignalIntent
 from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection
 from trading_nodes_base.minds import BaseMind
 from trading_nodes_base.strategies import BaseStrategy
@@ -505,6 +506,21 @@ class DropRatio30mRisk(RiskKlineFactor):
         return [RiskSignal(triggered=True, risk_kind="float", value=0.0)]
 
 
+class Counting30mTiming(KlineTimingFactor):
+    frequency = "30m"
+
+    def __init__(self) -> None:
+        super().__init__("count-30m")
+        self.seen = 0
+
+    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[Any]:
+        return []
+
+    def on_bar(self, bar: Any) -> list[SignalIntent]:
+        self.seen += 1
+        return []
+
+
 class RiskLiveStrategy(BaseStrategy):
     def __init__(self, code: str = "000001.SZ") -> None:
         super().__init__(
@@ -547,3 +563,48 @@ def test_realtime_engine_settles_risk_rebalance_sell_on_intraday_risk_drop() -> 
 
     sells = [order for order in trader.orders if order[0] == "SELL"]
     assert sells == [("SELL", "000001.SZ", 500, 10.0)]
+
+
+class RiskTiming30mStrategy(BaseStrategy):
+    def __init__(self, code: str = "000001.SZ") -> None:
+        self.timing = Counting30mTiming()
+        super().__init__(
+            "risk-timing",
+            selector=DemoFixedPicking([code]),
+            timer=BaseTimeSelection("risk-timing-timer", [self.timing], []),
+            risk_ctrl=BaseRiskControl("risk", risk_kline_factors=[DropRatio30mRisk()]),
+        )
+
+
+def _kline30m(code: str, end: str, price: float) -> KlineBar:
+    return KlineBar(code=code, frequency="30m", end_time=end, open=price, high=price, low=price,
+                    close=price, volume=0.0, amount=0.0)
+
+
+def test_adapter_prebuilt_intraday_feeds_timing_and_risk_through_one_path() -> None:
+    strategy = RiskTiming30mStrategy()
+    adapter = TradingContractAdapter(strategy)
+    sink: list[KlineBar] = []
+    adapter.set_risk_bar_sink(sink.append)
+    adapter.mark_external_frequency("30m")  # 历史优先：不再从 tick 聚合
+
+    bars = [_kline30m("000001.SZ", "10:00:00", 10.0), _kline30m("000001.SZ", "10:30:00", 11.0)]
+    adapter.feed_prebuilt_bars("30m", bars)
+
+    assert strategy.timing.seen == 2
+    assert strategy.risk_ctrl.risk_kline_factors[0].seen == 2
+    assert len(sink) == 2  # 每根风控 bar 触发一次调仓结算
+
+
+def test_adapter_external_frequency_ignores_ticks_but_prebuilt_feeds_both() -> None:
+    strategy = RiskTiming30mStrategy()
+    adapter = TradingContractAdapter(strategy)
+    adapter.mark_external_frequency("30m")
+
+    adapter.feed_market_event(_trade(clock="09:31:00"))  # ticks ignored for external 30m
+    assert strategy.timing.seen == 0
+    assert strategy.risk_ctrl.risk_kline_factors[0].seen == 0
+
+    adapter.feed_prebuilt_bars("30m", [_kline30m("000001.SZ", "10:00:00", 10.0)])
+    assert strategy.timing.seen == 1
+    assert strategy.risk_ctrl.risk_kline_factors[0].seen == 1

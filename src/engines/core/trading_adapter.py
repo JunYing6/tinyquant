@@ -30,17 +30,14 @@ class TradingContractAdapter:
             raise TypeError("TradingContractAdapter requires a strategy or stream")
         self._current_date: date | None = None
         self._skip_names: set[str] = set()
-        self.risk_bar_sink: Callable[[], None] | None = None
-        self._risk_enabled = False
+        self.risk_bar_sink: Callable[[KlineBar], None] | None = None
         self._aggregators: dict[tuple[str, str], KlineAggregator] = {}
         self._rebuild_aggregators()
 
     def _rebuild_aggregators(self) -> None:
         aggregators: dict[tuple[str, str], KlineAggregator] = {}
         for strategy in self.strategies:
-            frequencies = set(strategy.timer.kline_frequencies)
-            if self._risk_enabled:
-                frequencies |= self._risk_intraday_frequencies(strategy)
+            frequencies = set(strategy.timer.kline_frequencies) | self._risk_intraday_frequencies(strategy)
             for frequency in frequencies:
                 aggregators[(strategy.strategy_name, frequency)] = KlineAggregator(
                     frequency,
@@ -52,20 +49,26 @@ class TradingContractAdapter:
         def on_bar(bar: KlineBar) -> None:
             strategy.on_kline_bar(bar)
             if self.risk_bar_sink is not None and frequency in self._risk_intraday_frequencies(strategy):
-                self.risk_bar_sink()
+                self.risk_bar_sink(bar)
 
         return on_bar
 
-    def enable_risk_aggregation(self, sink: Callable[[], None] | None = None) -> None:
-        """让聚合器把 tick 聚合成风控日内 kline（如 30m）并喂 ``risk_ctrl.on_bar``。
+    def set_risk_bar_sink(self, sink: Callable[[KlineBar], None] | None) -> None:
+        """设置风控日内 kline bar 完成后的回调（引擎在回调里按 bar 收盘价结算开盘池）。
 
-        每根风控 bar 完成后回调 ``sink``（引擎在该回调里结算开盘池）。回测走历史日内
-        bar，不启用此路径，避免与逐日读取重复喂风控。
+        择时与风控共用同一套聚合器/回调：bar 经 ``strategy.on_kline_bar`` 派发（风控先
+        ``risk_ctrl.on_bar``、再 ``timer.kline_bar_input``），风控频率的 bar 额外触发 ``sink``。
         """
-        self._risk_enabled = True
-        if sink is not None:
-            self.risk_bar_sink = sink
-        self._rebuild_aggregators()
+        self.risk_bar_sink = sink
+
+    def mark_external_frequency(self, frequency: str) -> None:
+        """声明该频率的 bar 由外部（历史数据）提供：聚合器不再从 tick 聚合，避免重复喂。
+
+        历史数据优先时由引擎在 tick 重放前调用；随后用 ``feed_prebuilt_bars`` 按序投喂。
+        """
+        for (_, subscribed), aggregator in self._aggregators.items():
+            if subscribed == frequency:
+                aggregator.mark_external()
 
     @staticmethod
     def _risk_intraday_frequencies(strategy: BaseStrategy) -> set[str]:

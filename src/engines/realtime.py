@@ -96,7 +96,7 @@ class RealTimeTradeEngine:
             self._pipeline.clock = self._clock
             self._run_daily_pipeline(self._session.trading_date)
             self._subscribe_streams()
-            self._adapter.enable_risk_aggregation(self._on_risk_bar)
+            self._adapter.set_risk_bar_sink(self._on_risk_bar)
             self._subscribed = True
             self._signal_thread = threading.Thread(target=self._signal_consumer, daemon=True)
             self._signal_thread.start()
@@ -251,8 +251,11 @@ class RealTimeTradeEngine:
         if isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
             self._last_prices[code] = float(price)
 
-    def _on_risk_bar(self) -> None:
+    def _on_risk_bar(self, bar: Any) -> None:
         """风控日内 kline bar 完成：按当前价结算开盘池（风控下降即时卖）。"""
+        code = getattr(bar, "code", None)
+        if code:
+            self._last_prices[code] = float(bar.close)
         self._settle_risk_rebalance(dict(self._last_prices))
 
     def _settle_risk_rebalance(self, prices: dict[str, float]) -> None:
