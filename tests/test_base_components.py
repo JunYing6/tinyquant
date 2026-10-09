@@ -860,9 +860,11 @@ def test_rebalance_gap_uses_real_holdings() -> None:
     strategy.tick_matcher = FakeMatcher()
 
     strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
+    strategy.handle_order_event({"order_id": "order-1", "status": "FILLED", "filled_volume": 1000})
     account.positions["000001.SZ"] = 400  # 真实持仓
 
     assert strategy.timer_positions() == {"000001.SZ": 1000}  # 择时器原始目标
+    assert strategy.settled_timer_positions() == {"000001.SZ": 1000}
     assert strategy.rebalance_gap(1.0) == {"000001.SZ": 600}   # 应有1000 - 实持400
     assert strategy.rebalance_gap(0.5) == {"000001.SZ": 100}   # 应有500  - 实持400
     assert strategy.rebalance_gap(0.0) == {"000001.SZ": -400}  # 应有0    - 实持400 -> 卖
@@ -878,6 +880,7 @@ def test_rebalance_to_risk_routes_gap_to_pools_with_limit_prices() -> None:
     strategy._current_date = "20260930"
     strategy.tick_matcher = FakeMatcher()
     strategy.on_tick({"code": "000001.SZ", "time": "09:31:00", "price": 10.0})
+    strategy.handle_order_event({"order_id": "order-1", "status": "FILLED", "filled_volume": 1000})
     account.positions["000001.SZ"] = 400
     strategy.set_price_limits({"000001.SZ": (11.0, 9.0)})
 

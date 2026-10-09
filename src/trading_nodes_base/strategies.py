@@ -387,14 +387,25 @@ class BaseStrategy:
             positions[order.code] = positions.get(order.code, 0) + signed
         return positions
 
-    def rebalance_gap(self, ratio: float) -> Dict[str, int]:
-        """风控调仓差额：``应有(择时器原始目标 × 比例) − 真实持仓``；正=需买入，负=需卖出。
+    def settled_timer_positions(self) -> Dict[str, int]:
+        """台账中**已成交**的净原始持仓——调仓依据（未成交/当日新成交按 T+1 不计）。"""
+        positions: Dict[str, int] = {}
+        for order in self._timer_orders:
+            if order.status != "filled":
+                continue
+            signed = order.target_volume if order.action == "BUY" else -order.target_volume
+            positions[order.code] = positions.get(order.code, 0) + signed
+        return positions
 
-        "当前"一侧用**真实持仓**（开盘单是昨日已成交的；未成交的旧单在结算前应已撤销）。
+    def rebalance_gap(self, ratio: float) -> Dict[str, int]:
+        """风控调仓差额：``应有(已成交择时器目标 × 比例) − 真实持仓``；正=需买入，负=需卖出。
+
+        "应有"以**已成交**的台账户为准（未成交/当日新成交按 T+1 不能动）；
+        "当前"一侧用**真实持仓**。
         """
         ratio = max(0.0, float(ratio))
         gap: Dict[str, int] = {}
-        for code, target_volume in self.timer_positions().items():
+        for code, target_volume in self.settled_timer_positions().items():
             desired = int(target_volume * ratio) // 100 * 100
             held = int(self.current_positions.get(code, 0))
             delta = desired - held
