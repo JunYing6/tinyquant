@@ -132,7 +132,8 @@ class FastBacktestEngine:
                  order_cost: dict[str, float] | None = None, progress_bar: bool = True,
                  progress_callback: Any = None, data_gateway: DataGateway | None = None,
                  execution_timing: str = "next_bar_open", execution_delay: int = 1,
-                 schedule: Mapping[str, str] | None = None, stream_shard_size: int = 48) -> None:
+                 schedule: Mapping[str, str] | None = None, stream_shard_size: int = 48,
+                 stream_replan: str = "incremental") -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
         if execution_timing not in _VALID_TIMINGS:
@@ -146,7 +147,10 @@ class FastBacktestEngine:
         self._schedule_times = {**_DEFAULT_SCHEDULE, **dict(schedule or {})}
         if not isinstance(stream_shard_size, int) or isinstance(stream_shard_size, bool) or stream_shard_size < 1:
             raise ValueError("stream_shard_size must be a positive integer")
+        if stream_replan not in {"incremental", "swap"}:
+            raise ValueError("stream_replan must be 'incremental' or 'swap'")
         self.stream_shard_size = stream_shard_size
+        self.stream_replan = stream_replan
         self.entity = entity
         self.start_date = self._normalize_date(start_date)
         self.end_date = self._normalize_date(end_date)
@@ -544,6 +548,8 @@ class FastBacktestEngine:
         self._pool_dirty = True
         self._stream_base = base
         datasets = ("market.trade", "market.quote")
+        if self.stream_replan == "swap":
+            return self._run_tick_replay_swap(session, clock, base, aggregate, last_prices, datasets)
         ordered = sorted(base)
         shard_size = max(1, int(self.stream_shard_size))
         shards: dict[int, tuple[str, ...]] = {}
@@ -617,6 +623,44 @@ class FastBacktestEngine:
             if new_subs != subs:
                 subs = new_subs
                 reconcile(subs)
+        return last_prices
+
+    def _run_tick_replay_swap(self, session: Any, clock: SimulationClock, base: set[str], aggregate: set[str], last_prices: dict[str, float], datasets: tuple[str, ...]) -> dict[str, float]:
+        """整体换流：订阅集一变，丢弃当前流、按新集从当前时刻重开。"""
+        delivered: set[tuple] = set()
+
+        def subscriptions() -> set[str]:
+            return self._current_subscriptions(aggregate, base)
+
+        def open_stream(codes: set[str]) -> _TickFanout:
+            fanout = _TickFanout()
+            for dataset in datasets:
+                fanout.add(tuple(codes), self._tick_iterator(dataset, sorted(codes), clock.now, session))
+            return fanout
+
+        current = subscriptions()
+        if not current:
+            return last_prices
+        stream = open_stream(current)
+        while stream:
+            event = stream.pop()
+            if event.event_time is not None and event.event_time < clock.now:
+                continue
+            key = (getattr(event, "event_type", None), getattr(event, "instrument_id", None), event.event_time, getattr(event, "sequence", None))
+            if key in delivered:
+                continue
+            delivered.add(key)
+            code = getattr(event, "instrument_id", None)
+            clock.advance(event.event_time)
+            if isinstance(event, TradeTick) and code and event.price:
+                last_prices[code] = float(event.price)
+            self._adapter.feed_market_event(event)
+            new = subscriptions()
+            if new != current:
+                current = new
+                if not current:
+                    break
+                stream = open_stream(current)
         return last_prices
 
     def _settle_day(self, price_dict: dict[str, float]) -> None:
