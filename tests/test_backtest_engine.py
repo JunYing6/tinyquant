@@ -371,3 +371,50 @@ def test_tick_replay_reads_only_subscribed_codes() -> None:
     tick_reads = [request for request in gateway.reads if request.dataset == "market.trade"]
     assert tick_reads and all(request.instruments == ("000001.SZ",) for request in tick_reads)
     assert set(strategy.factor.seen) == {"000001.SZ"}
+
+
+class _RecordingBothFactor(TickTimingFactor):
+    def __init__(self) -> None:
+        super().__init__("record-both")
+        self.seen: list[tuple[str, str]] = []
+
+    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
+        return []
+
+    def required_codes(self, pool=None, positions=None, account_info=None, **extra: Any) -> list[str]:
+        return ["000001.SZ", "600000.SH"]
+
+    def on_tick(self, tick: dict[str, Any], intents: Sequence[SignalIntent] = ()) -> list[SignalIntent]:
+        self.seen.append((tick.get("code"), tick.get("time")))
+        return []
+
+
+class _BothTickStrategy(BaseStrategy):
+    def __init__(self) -> None:
+        self.factor = _RecordingBothFactor()
+        super().__init__(
+            "both-tick",
+            selector=_BothPicking(["000001.SZ", "600000.SH"]),
+            timer=BaseTimeSelection("both-tick-timer", [], [self.factor]),
+        )
+
+
+def test_tick_replay_delivers_subscribed_codes_in_global_time_order() -> None:
+    # 两个 code 的 tick 交错；引擎须按全局时间单调投递（源数据按标的分组，不能只靠组内顺序）
+    ticks = [
+        _trade("20240102", "000001.SZ", "09:31:00"),
+        _trade("20240102", "600000.SH", "09:32:00"),
+        _trade("20240102", "000001.SZ", "09:33:00"),
+    ]
+    gateway = _RecordingGateway(
+        bars=[_bar("20240102", 10.0, "000001.SZ"), _bar("20240102", 10.0, "600000.SH")],
+        events=ticks,
+        sessions=[_session("20240102")],
+    )
+    strategy = _BothTickStrategy()
+    engine = FastBacktestEngine(strategy, "20240102", "20240102", mode="tick", data_gateway=gateway, progress_bar=False)
+
+    engine.run()
+
+    assert [code for code, _ in strategy.factor.seen] == ["000001.SZ", "600000.SH", "000001.SZ"]
+    assert [clock for _, clock in strategy.factor.seen] == ["09:31:00", "09:32:00", "09:33:00"]

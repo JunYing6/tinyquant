@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from heapq import heappop, heappush
 
 from tools.data.errors import DataContractError
 from typing import Any, Literal, Mapping, cast
@@ -14,7 +15,7 @@ from engines.core.pipeline import DataProviderError, UnifiedDataPipeline
 from engines.core.slippage import SlippageModel
 from engines.core.trading_adapter import TradingContractAdapter
 from engines.core.subscriptions import KIND_TICK, StreamRegistry, SubscriptionTracker, kline_kind
-from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, PRIORITY_SCHEDULED, SimulationClock, TradeTick, replay_events
+from tools.data import Bar, CalendarRequest, DataGateway, DataRequest, PRIORITY_SCHEDULED, SimulationClock, TradeTick
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
 from trading_nodes_base.types import ExecutionMode, KlineBar, normalize_frequency
@@ -45,6 +46,40 @@ class _MirrorMatcher:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+
+class _MergeStream:
+    """把多路按 ``(event_time, sequence)`` 有序的 tick 迭代器归并成单一事件流。
+
+    支持按订阅变化增代：新增 code 时以 ``start``（当前时钟时刻）另开一路，
+    与既有路归并；已处理过的事件不会重复（调用方以事件键去重）。
+    """
+
+    def __init__(self) -> None:
+        self._iters: list[Any] = []
+        self._heads: list[tuple[Any, ...]] = []
+        self._counter = 0
+
+    def add(self, iterator: Any) -> None:
+        index = len(self._iters)
+        self._iters.append(iterator)
+        self._advance(index)
+
+    def _advance(self, index: int) -> None:
+        event = next(self._iters[index], None)
+        if event is None:
+            return
+        key = (event.event_time, getattr(event, "sequence", 0) or 0, self._counter)
+        self._counter += 1
+        heappush(self._heads, (key, index, event))
+
+    def __bool__(self) -> bool:
+        return bool(self._heads)
+
+    def pop(self) -> Any:
+        _key, index, event = heappop(self._heads)
+        self._advance(index)
+        return event
 
 
 class FastBacktestEngine:
@@ -107,6 +142,10 @@ class FastBacktestEngine:
         self._limits_by_day: dict[str, dict[str, tuple[float, float]]] = {}
         self._limits_loaded = False
         self._intraday_prices: dict[str, float] = {}
+        self._pool_dirty = False
+        self._stream_base: set[str] = set()
+        for strategy in self._strategies:
+            strategy.timer.set_pool_change_callback(self._mark_pool_dirty)
         self.equity_curve: list[dict[str, Any]] = []
         self.daily_positions: list[dict[str, Any]] = []
         self.member_curve: list[dict[str, Any]] = []
@@ -289,6 +328,35 @@ class FastBacktestEngine:
         if self._registry.is_subscribed(kline_kind(frequency), bar.code):
             self._adapter.feed_prebuilt_bars(frequency, [bar])
 
+    def _mark_pool_dirty(self, *_: Any) -> None:
+        """因子日内增减声明代码后置脏标记；下一个流步惰性重建订阅集。"""
+        self._pool_dirty = True
+
+    def _fetch_set(self, aggregate_freqs: set[str], base: set[str]) -> frozenset[str]:
+        """当前需要拉取的 code：tick 订阅 ∪ 需聚合的 kline 频率订阅，∩ base。"""
+        if self._pool_dirty:
+            self._sync_stream_subscriptions(base)
+            self._pool_dirty = False
+        codes = set(self._registry.codes(KIND_TICK))
+        for frequency in aggregate_freqs:
+            codes |= self._registry.codes(kline_kind(frequency))
+        return frozenset(codes & base)
+
+    def _tick_iterator(self, dataset: str, codes: list[str], start: datetime, session: Any):
+        """按分块历史流拉取某 dataset 的 tick（惰性）；不支持 iterate 则回退 read。"""
+        request = DataRequest(dataset=dataset, instruments=tuple(codes), start=start, end=session.close)
+        try:
+            iterator = self.data_gateway.iterate(request)
+        except (AttributeError, NotImplementedError):
+            iterator = None
+        if iterator is None:
+            for record in self.data_gateway.read(request).records:
+                yield record
+            return
+        for chunk in iterator:
+            for record in chunk.records:
+                yield record
+
     def _load_intraday_klines(self, session: Any, codes: list[str]) -> dict[str, list[KlineBar]]:
         """读取各日内频率的历史 kline bar（优先数据源）；读不到的频率缺省，交给 tick 聚合。"""
         instruments = tuple(codes) if codes else None
@@ -410,11 +478,11 @@ class FastBacktestEngine:
                 if self.is_stream:
                     self.entity.replicate_close_orders(strategy.strategy_name, orders)
 
-    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], clock: SimulationClock | None = None, last_prices: dict[str, float] | None = None, aggregate_freqs: set[str] | None = None, slice_minutes: int = 30) -> dict[str, float]:
-        """按 30 分钟分片重放 tick，交给模拟时钟按时间派发（同刻 tick 先于 kline）。
+    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], clock: SimulationClock | None = None, last_prices: dict[str, float] | None = None, aggregate_freqs: set[str] | None = None) -> dict[str, float]:
+        """流式重放 tick：按当前订阅拉取，随时钟逐事件派发；订阅变化即从当前时刻续读。
 
-        每片只拉取**被订阅**的 code：tick 流订阅者 ∪（需 tick 聚合的 kline 频率订阅者）。
-        ``last_prices`` 由调用方传入并被就地更新，使时钟上排定的尾盘调仓任务能读到最新价。
+        每处理一个事件后惰性对账声明代码集：不变则沿用当前流（不重读），变化则按
+        新集从当前时钟时刻另开流并归并；同刻先 tick 后 kline 由时钟保证。
         """
         base = set(price_dict) | self._active_codes()
         aggregate = set(aggregate_freqs or ())
@@ -422,29 +490,38 @@ class FastBacktestEngine:
             last_prices = {}
         if clock is None:
             clock = SimulationClock(session)
+        self._pool_dirty = True
+        self._stream_base = base
+        delivered: set[tuple] = set()
 
-        def feed(event: Any) -> None:
+        def open_stream(codes: frozenset[str]) -> _MergeStream:
+            stream = _MergeStream()
+            for dataset in ("market.trade", "market.quote"):
+                stream.add(self._tick_iterator(dataset, sorted(codes), clock.now, session))
+            return stream
+
+        current = self._fetch_set(aggregate, base)
+        if not current:
+            return last_prices
+        stream = open_stream(current)
+        while stream:
+            event = stream.pop()
+            if event.event_time is not None and event.event_time < clock.now:
+                continue  # 重开流可能回吐早于当前时刻的事件（适配器未按时间下推）——已处理过
+            key = (getattr(event, "event_type", None), getattr(event, "instrument_id", None), event.event_time, getattr(event, "sequence", None))
+            if key in delivered:
+                continue
+            delivered.add(key)
+            clock.advance(event.event_time)
             if isinstance(event, TradeTick) and event.instrument_id and event.price:
                 last_prices[event.instrument_id] = float(event.price)
             self._adapter.feed_market_event(event)
-
-        for start, end in self._time_slices(session.open, session.close, slice_minutes):
-            # 每片前按当前订阅重算拉取范围：因子 drop / 订单成交都会收窄或放宽
-            self._sync_stream_subscriptions(base)
-            codes = set(self._registry.codes(KIND_TICK))
-            for frequency in aggregate:
-                codes |= self._registry.codes(kline_kind(frequency))
-            codes = sorted(codes & base)
-            if not codes:
-                continue
-            events = []
-            for dataset in ("market.trade", "market.quote"):
-                batch = self.data_gateway.read(DataRequest(dataset=dataset, instruments=tuple(codes), start=start, end=end))
-                if not batch.complete or batch.next_cursor is not None:
-                    raise DataContractError(f"{dataset} batch must be complete and fully consumed")
-                events.extend(batch.records)
-            events.sort(key=lambda event: (event.event_time or datetime.min.replace(tzinfo=session.open.tzinfo), getattr(event, "sequence", 0) or 0))
-            replay_events(events, clock, feed)
+            changed = self._fetch_set(aggregate, base)
+            if changed != current:
+                current = changed
+                if not current:
+                    break
+                stream = open_stream(current)
         return last_prices
 
     def _settle_day(self, price_dict: dict[str, float]) -> None:

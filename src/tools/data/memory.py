@@ -150,6 +150,8 @@ class InMemoryGateway:
                 if not start <= minute <= end:
                     continue
             filtered.append(record)
+        if request.dataset in ("market.trade", "market.quote"):
+            filtered.sort(key=lambda record: (record.event_time, getattr(record, "sequence", 0) or 0))
         if request.fields:
             definition = default_catalog().get(request.dataset)
             unknown = set(request.fields) - set(definition.fields)
@@ -158,6 +160,9 @@ class InMemoryGateway:
             if isinstance(filtered[0], Bar) if filtered else False:
                 filtered = [replace(record, metadata={**record.metadata, "fields": request.fields}) for record in filtered]
         return self._batch(request.dataset, filtered)
+
+    def iter(self, request: DataRequest, chunk_size: int = 10_000):
+        yield self.read(request)
 
     def _read_table(self, request: DataRequest) -> DataBatch:
         definition = default_catalog().get(request.dataset)
