@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta
 from heapq import heappop, heappush
 
 from tools.data.errors import DataContractError
-from typing import Any, Literal, Mapping, cast
+from typing import Any, Iterable, Literal, Mapping, cast
 
 from engines.core.account import Account
 from engines.core.matching import MatchingEngine
@@ -48,37 +48,80 @@ class _MirrorMatcher:
         return getattr(self._inner, name)
 
 
-class _MergeStream:
-    """把多路按 ``(event_time, sequence)`` 有序的 tick 迭代器归并成单一事件流。
+class _Gen:
+    """一路 tick 流：覆盖一个 code 子集、按 ``(event_time, sequence)`` 有序。"""
 
-    支持按订阅变化增代：新增 code 时以 ``start``（当前时钟时刻）另开一路，
-    与既有路归并；已处理过的事件不会重复（调用方以事件键去重）。
+    __slots__ = ("codes", "iterator", "head", "closed")
+
+    def __init__(self, codes: frozenset[str], iterator: Any) -> None:
+        self.codes = codes
+        self.iterator = iterator
+        self.head: Any = None
+        self.closed = False
+
+
+class _TickFanout:
+    """多路 tick 流的归并器：支持**随时增路/闭路**，同刻先 tick 后 kline 由时钟保证。
+
+    每个 code 只属于一路，故不会重复投递。增路用于新订阅（如越界码单开流），
+    闭路用于某路子集全部退订。
     """
 
     def __init__(self) -> None:
-        self._iters: list[Any] = []
-        self._heads: list[tuple[Any, ...]] = []
+        self._gens: list[_Gen] = []
+        self._heap: list[tuple[Any, ...]] = []
         self._counter = 0
 
-    def add(self, iterator: Any) -> None:
-        index = len(self._iters)
-        self._iters.append(iterator)
-        self._advance(index)
+    @staticmethod
+    def _key(event: Any) -> tuple[Any, Any]:
+        return (event.event_time, getattr(event, "sequence", 0) or 0)
 
-    def _advance(self, index: int) -> None:
-        event = next(self._iters[index], None)
-        if event is None:
+    def _pull(self, gen: _Gen) -> None:
+        if gen.closed or gen.head is not None:
             return
-        key = (event.event_time, getattr(event, "sequence", 0) or 0, self._counter)
-        self._counter += 1
-        heappush(self._heads, (key, index, event))
+        gen.head = next(gen.iterator, None)
+
+    def add(self, codes: Iterable[str], iterator: Any) -> _Gen:
+        gen = _Gen(frozenset(codes), iterator)
+        self._gens.append(gen)
+        self._pull(gen)
+        self._rebuild()
+        return gen
+
+    def close(self, gens: Iterable[_Gen]) -> None:
+        for gen in gens:
+            gen.closed = True
+            gen.head = None
+            closer = getattr(gen.iterator, "close", None)
+            if closer is not None:
+                try:
+                    closer()
+                except Exception:
+                    pass
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self._counter = 0
+        self._heap = []
+        for index, gen in enumerate(self._gens):
+            if gen.head is not None and not gen.closed:
+                heappush(self._heap, (self._key(gen.head), self._counter, index))
+                self._counter += 1
 
     def __bool__(self) -> bool:
-        return bool(self._heads)
+        return any(gen.head is not None and not gen.closed for gen in self._gens)
 
     def pop(self) -> Any:
-        _key, index, event = heappop(self._heads)
-        self._advance(index)
+        if not self._heap:
+            raise StopIteration
+        _key, _counter, index = heappop(self._heap)
+        gen = self._gens[index]
+        event = gen.head
+        gen.head = None
+        self._pull(gen)
+        if gen.head is not None and not gen.closed:
+            heappush(self._heap, (self._key(gen.head), self._counter, index))
+            self._counter += 1
         return event
 
 
@@ -89,7 +132,7 @@ class FastBacktestEngine:
                  order_cost: dict[str, float] | None = None, progress_bar: bool = True,
                  progress_callback: Any = None, data_gateway: DataGateway | None = None,
                  execution_timing: str = "next_bar_open", execution_delay: int = 1,
-                 schedule: Mapping[str, str] | None = None) -> None:
+                 schedule: Mapping[str, str] | None = None, stream_shard_size: int = 48) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
         if execution_timing not in _VALID_TIMINGS:
@@ -101,6 +144,9 @@ class FastBacktestEngine:
         if initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
         self._schedule_times = {**_DEFAULT_SCHEDULE, **dict(schedule or {})}
+        if not isinstance(stream_shard_size, int) or isinstance(stream_shard_size, bool) or stream_shard_size < 1:
+            raise ValueError("stream_shard_size must be a positive integer")
+        self.stream_shard_size = stream_shard_size
         self.entity = entity
         self.start_date = self._normalize_date(start_date)
         self.end_date = self._normalize_date(end_date)
@@ -332,15 +378,18 @@ class FastBacktestEngine:
         """因子日内增减声明代码后置脏标记；下一个流步惰性重建订阅集。"""
         self._pool_dirty = True
 
-    def _fetch_set(self, aggregate_freqs: set[str], base: set[str]) -> frozenset[str]:
-        """当前需要拉取的 code：tick 订阅 ∪ 需聚合的 kline 频率订阅，∩ base。"""
+    def _current_subscriptions(self, aggregate_freqs: set[str], base: set[str]) -> set[str]:
+        """当前需要 tick 的 code：tick 订阅 ∪ 需聚合的 kline 频率订阅。
+
+        因子声明变化时惰性重建订阅集。**不**与 base 求交——越界码（池外）也要单开流。
+        """
         if self._pool_dirty:
             self._sync_stream_subscriptions(base)
             self._pool_dirty = False
         codes = set(self._registry.codes(KIND_TICK))
         for frequency in aggregate_freqs:
             codes |= self._registry.codes(kline_kind(frequency))
-        return frozenset(codes & base)
+        return codes
 
     def _tick_iterator(self, dataset: str, codes: list[str], start: datetime, session: Any):
         """按分块历史流拉取某 dataset 的 tick（惰性）；不支持 iterate 则回退 read。"""
@@ -479,10 +528,12 @@ class FastBacktestEngine:
                     self.entity.replicate_close_orders(strategy.strategy_name, orders)
 
     def _run_tick_replay(self, session: Any, price_dict: dict[str, float], clock: SimulationClock | None = None, last_prices: dict[str, float] | None = None, aggregate_freqs: set[str] | None = None) -> dict[str, float]:
-        """流式重放 tick：按当前订阅拉取，随时钟逐事件派发；订阅变化即从当前时刻续读。
+        """流式重放 tick：基础池按分片开流归并，订阅变化时增/闭路，不重读已订阅数据。
 
-        每处理一个事件后惰性对账声明代码集：不变则沿用当前流（不重读），变化则按
-        新集从当前时钟时刻另开流并归并；同刻先 tick 后 kline 由时钟保证。
+        - **起始**：基础池按 ``stream_shard_size`` 分片，每片一路（时间有序）归并。
+        - **新增越界码**（不在任何分片里）：为该码单开一路。
+        - **某分片的所有 code 都退订**：结束该分片流，释放资源。
+        每处理一笔后惰性对账订阅集；同刻先 tick 后 kline 由时钟保证。
         """
         base = set(price_dict) | self._active_codes()
         aggregate = set(aggregate_freqs or ())
@@ -492,36 +543,80 @@ class FastBacktestEngine:
             clock = SimulationClock(session)
         self._pool_dirty = True
         self._stream_base = base
+        datasets = ("market.trade", "market.quote")
+        ordered = sorted(base)
+        shard_size = max(1, int(self.stream_shard_size))
+        shards: dict[int, tuple[str, ...]] = {}
+        code_shard: dict[str, int] = {}
+        for start in range(0, len(ordered), shard_size):
+            sid = len(shards)
+            chunk = tuple(ordered[start:start + shard_size])
+            shards[sid] = chunk
+            for code in chunk:
+                code_shard[code] = sid
+
+        fanout = _TickFanout()
+        shard_gens: dict[int, list[_Gen]] = {}
+        percode_gens: dict[str, list[_Gen]] = {}
         delivered: set[tuple] = set()
 
-        def open_stream(codes: frozenset[str]) -> _MergeStream:
-            stream = _MergeStream()
-            for dataset in ("market.trade", "market.quote"):
-                stream.add(self._tick_iterator(dataset, sorted(codes), clock.now, session))
-            return stream
+        def open_shard(sid: int) -> None:
+            if sid in shard_gens:
+                return
+            codes = shards[sid]
+            shard_gens[sid] = [fanout.add(codes, self._tick_iterator(dataset, list(codes), clock.now, session)) for dataset in datasets]
 
-        current = self._fetch_set(aggregate, base)
-        if not current:
-            return last_prices
-        stream = open_stream(current)
-        while stream:
-            event = stream.pop()
+        def close_shard(sid: int) -> None:
+            gens = shard_gens.pop(sid, None)
+            if gens:
+                fanout.close(gens)
+
+        def open_percode(code: str) -> None:
+            if code in percode_gens:
+                return
+            percode_gens[code] = [fanout.add((code,), self._tick_iterator(dataset, [code], clock.now, session)) for dataset in datasets]
+
+        def close_percode(code: str) -> None:
+            gens = percode_gens.pop(code, None)
+            if gens:
+                fanout.close(gens)
+
+        def reconcile(subs: set[str]) -> None:
+            for sid, codes in shards.items():
+                if sid in shard_gens:
+                    if not (set(codes) & subs):
+                        close_shard(sid)
+                elif set(codes) & subs:
+                    open_shard(sid)
+            out_of_pool = {code for code in subs if code not in code_shard}
+            for code in list(percode_gens):
+                if code not in out_of_pool:
+                    close_percode(code)
+            for code in out_of_pool:
+                if code not in percode_gens:
+                    open_percode(code)
+
+        subs = self._current_subscriptions(aggregate, base)
+        reconcile(subs)
+        while fanout:
+            event = fanout.pop()
             if event.event_time is not None and event.event_time < clock.now:
-                continue  # 重开流可能回吐早于当前时刻的事件（适配器未按时间下推）——已处理过
-            key = (getattr(event, "event_type", None), getattr(event, "instrument_id", None), event.event_time, getattr(event, "sequence", None))
+                continue  # 重开/新增的流可能回吐早于当前时刻的事件——已处理过
+            code = getattr(event, "instrument_id", None)
+            if code not in subs:
+                continue  # 分片内未订阅的 code：丢弃（数据已读，仅不喂）
+            key = (getattr(event, "event_type", None), code, event.event_time, getattr(event, "sequence", None))
             if key in delivered:
                 continue
             delivered.add(key)
             clock.advance(event.event_time)
-            if isinstance(event, TradeTick) and event.instrument_id and event.price:
-                last_prices[event.instrument_id] = float(event.price)
+            if isinstance(event, TradeTick) and code and event.price:
+                last_prices[code] = float(event.price)
             self._adapter.feed_market_event(event)
-            changed = self._fetch_set(aggregate, base)
-            if changed != current:
-                current = changed
-                if not current:
-                    break
-                stream = open_stream(current)
+            new_subs = self._current_subscriptions(aggregate, base)
+            if new_subs != subs:
+                subs = new_subs
+                reconcile(subs)
         return last_prices
 
     def _settle_day(self, price_dict: dict[str, float]) -> None:

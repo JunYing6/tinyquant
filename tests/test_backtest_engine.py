@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from engines.core.pipeline import DataProviderError
-from engines.fast import FastBacktestEngine
+from engines.fast import FastBacktestEngine, _TickFanout
 from tools.data import Bar, DataContractError, DataRequest, InMemoryGateway, Session, TradeTick, TradingPhase
 from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
@@ -364,7 +364,7 @@ def test_tick_replay_reads_only_subscribed_codes() -> None:
         sessions=[_session("20240102")],
     )
     strategy = _NarrowTickStrategy()
-    engine = FastBacktestEngine(strategy, "20240102", "20240102", mode="tick", data_gateway=gateway, progress_bar=False)
+    engine = FastBacktestEngine(strategy, "20240102", "20240102", mode="tick", data_gateway=gateway, progress_bar=False, stream_shard_size=1)
 
     engine.run()
 
@@ -418,3 +418,29 @@ def test_tick_replay_delivers_subscribed_codes_in_global_time_order() -> None:
 
     assert [code for code, _ in strategy.factor.seen] == ["000001.SZ", "600000.SH", "000001.SZ"]
     assert [clock for _, clock in strategy.factor.seen] == ["09:31:00", "09:32:00", "09:33:00"]
+
+
+def _fanout_event(t: int, code: str = "A") -> Any:
+    return type("E", (), {"event_time": t, "sequence": 1, "instrument_id": code})()
+
+
+def test_tick_fanout_merges_generations_by_time() -> None:
+    fanout = _TickFanout()
+    fanout.add(("A",), iter([_fanout_event(1), _fanout_event(3)]))
+    fanout.add(("B",), iter([_fanout_event(2), _fanout_event(4)]))
+    drained = []
+    while fanout:
+        drained.append(fanout.pop().event_time)
+    assert drained == [1, 2, 3, 4]
+
+
+def test_tick_fanout_close_drops_a_generation() -> None:
+    fanout = _TickFanout()
+    gen_a = fanout.add(("A",), iter([_fanout_event(1), _fanout_event(3)]))
+    gen_b = fanout.add(("B",), iter([_fanout_event(2), _fanout_event(4)]))
+    assert gen_a.head is not None
+    fanout.close([gen_b])
+    drained = []
+    while fanout:
+        drained.append(fanout.pop().event_time)
+    assert drained == [1, 3]  # B 的路已结束
