@@ -209,6 +209,20 @@ class SimulationClock:
         if end > self._now:
             self._now = end
 
+    def peek_task(self):
+        """返回时间轴上最早到期的任务 ``(when, priority, seq, callback)``，未到期返回 ``None``。"""
+        return self._tasks[0] if self._tasks else None
+
+    def fire_next(self):
+        """触发最早到期的任务（不检查时间上界；用于时钟自主推进）。"""
+        if not self._tasks:
+            return None
+        when, _priority, _seq, callback = heappop(self._tasks)
+        if when > self._now:
+            self._now = when
+        callback()
+        return when
+
     def flush(self) -> None:
         """触发所有剩余任务（收尾），不再受时间上界约束。"""
         self._fire(lambda when: True)

@@ -607,3 +607,24 @@ def test_simulation_clock_push_tick_requires_event_time():
     clock = SimulationClock(make_session())
     with pytest.raises(ValueError):
         clock.push_tick(type("E", (), {"event_time": None})(), lambda event: None)
+
+
+def test_simulation_clock_self_drives_through_scheduled_tasks():
+    # 时钟必须自己能跑：没有外部事件推进时，逐任务推进到各自时刻
+    clock = SimulationClock(make_session(), start=utc(2024, 1, 2, 8, 30))
+    fired: list[tuple[datetime, str]] = []
+    clock.schedule(utc(2024, 1, 2, 10, 0), lambda: fired.append((clock.now, "10:00")))
+    clock.schedule(utc(2024, 1, 2, 10, 30), lambda: fired.append((clock.now, "10:30")))
+    clock.schedule(utc(2024, 1, 2, 14, 57), lambda: fired.append((clock.now, "14:57")))
+
+    pushed = []
+    while True:
+        task = clock.peek_task()
+        if task is None:
+            break
+        pushed.append(task[0])
+        clock.fire_next()
+
+    assert pushed == [utc(2024, 1, 2, 10, 0), utc(2024, 1, 2, 10, 30), utc(2024, 1, 2, 14, 57)]
+    assert fired == [(utc(2024, 1, 2, 10, 0), "10:00"), (utc(2024, 1, 2, 10, 30), "10:30"), (utc(2024, 1, 2, 14, 57), "14:57")]
+    assert clock.now == utc(2024, 1, 2, 14, 57)

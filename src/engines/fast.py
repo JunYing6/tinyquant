@@ -111,6 +111,12 @@ class _TickFanout:
     def __bool__(self) -> bool:
         return any(gen.head is not None and not gen.closed for gen in self._gens)
 
+    def peek(self) -> Any:
+        """返回时间轴上最早的一笔事件（不弹出）；无事件返回 ``None``。"""
+        if not self._heap:
+            return None
+        return self._gens[self._heap[0][2]].head
+
     def pop(self) -> Any:
         if not self._heap:
             raise StopIteration
@@ -132,8 +138,7 @@ class FastBacktestEngine:
                  order_cost: dict[str, float] | None = None, progress_bar: bool = True,
                  progress_callback: Any = None, data_gateway: DataGateway | None = None,
                  execution_timing: str = "next_bar_open", execution_delay: int = 1,
-                 schedule: Mapping[str, str] | None = None, stream_shard_size: int = 48,
-                 stream_replan: str = "incremental") -> None:
+                 schedule: Mapping[str, str] | None = None, stream_shard_size: int = 48) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
         if execution_timing not in _VALID_TIMINGS:
@@ -147,10 +152,7 @@ class FastBacktestEngine:
         self._schedule_times = {**_DEFAULT_SCHEDULE, **dict(schedule or {})}
         if not isinstance(stream_shard_size, int) or isinstance(stream_shard_size, bool) or stream_shard_size < 1:
             raise ValueError("stream_shard_size must be a positive integer")
-        if stream_replan not in {"incremental", "swap"}:
-            raise ValueError("stream_replan must be 'incremental' or 'swap'")
         self.stream_shard_size = stream_shard_size
-        self.stream_replan = stream_replan
         self.entity = entity
         self.start_date = self._normalize_date(start_date)
         self.end_date = self._normalize_date(end_date)
@@ -274,9 +276,9 @@ class FastBacktestEngine:
         clock.schedule(self._day_time(session, self._schedule_times["close_rebalance"]),
                        lambda: self._settle_rebalance(state["tick"] or state["close"], open_pool=False), PRIORITY_SCHEDULED)
         clock.run_until(session.open)  # 触发盘前 + 开盘调仓
-        if state["ticked"]:
-            self._run_tick_replay(session, state["open"], clock, state["tick"], state["aggregate_freqs"])
-        clock.flush()  # 收尾：最后一根 kline 与尾盘调仓
+        # 时钟自主推进：tick 只是挂进来的"事件源"，纯 kline 也会按自身时刻逐根走
+        self._run_intraday_clock(clock, state)
+        clock.flush()  # 保险收尾
         self._execute_pending_daily(state["close"], state["tick"] or None)
         if state["ticked"]:
             self._adapter.flush_day(session.trading_date)
@@ -531,25 +533,19 @@ class FastBacktestEngine:
                 if self.is_stream:
                     self.entity.replicate_close_orders(strategy.strategy_name, orders)
 
-    def _run_tick_replay(self, session: Any, price_dict: dict[str, float], clock: SimulationClock | None = None, last_prices: dict[str, float] | None = None, aggregate_freqs: set[str] | None = None) -> dict[str, float]:
-        """流式重放 tick：基础池按分片开流归并，订阅变化时增/闭路，不重读已订阅数据。
+    def _run_intraday_clock(self, clock: SimulationClock, state: dict[str, Any]) -> None:
+        """时钟**自主**推进：tick 只是挂进来的一路事件源，kline/定时任务由时钟自己到点触发。
 
-        - **起始**：基础池按 ``stream_shard_size`` 分片，每片一路（时间有序）归并。
-        - **新增越界码**（不在任何分片里）：为该码单开一路。
-        - **某分片的所有 code 都退订**：结束该分片流，释放资源。
-        每处理一笔后惰性对账订阅集；同刻先 tick 后 kline 由时钟保证。
+        主循环取"最早的一笔 tick"与"最早到期的定时任务"，把时钟推进到两者**更早**的那个时刻：
+        到点先派发该时刻的全部 tick（同刻先 tick 后 kline），再触发该时刻的定时任务。纯 kline
+        （无 tick）时，时钟就逐任务推进——不再依赖 tick 把时钟往前顶。
         """
-        base = set(price_dict) | self._active_codes()
-        aggregate = set(aggregate_freqs or ())
-        if last_prices is None:
-            last_prices = {}
-        if clock is None:
-            clock = SimulationClock(session)
+        base = set(state["open"]) | self._active_codes()
+        aggregate = set(state["aggregate_freqs"])
+        last_prices = state["tick"]
         self._pool_dirty = True
         self._stream_base = base
         datasets = ("market.trade", "market.quote")
-        if self.stream_replan == "swap":
-            return self._run_tick_replay_swap(session, clock, base, aggregate, last_prices, datasets)
         ordered = sorted(base)
         shard_size = max(1, int(self.stream_shard_size))
         shards: dict[int, tuple[str, ...]] = {}
@@ -570,7 +566,7 @@ class FastBacktestEngine:
             if sid in shard_gens:
                 return
             codes = shards[sid]
-            shard_gens[sid] = [fanout.add(codes, self._tick_iterator(dataset, list(codes), clock.now, session)) for dataset in datasets]
+            shard_gens[sid] = [fanout.add(codes, self._tick_iterator(dataset, list(codes), clock.now, clock.session)) for dataset in datasets]
 
         def close_shard(sid: int) -> None:
             gens = shard_gens.pop(sid, None)
@@ -580,7 +576,7 @@ class FastBacktestEngine:
         def open_percode(code: str) -> None:
             if code in percode_gens:
                 return
-            percode_gens[code] = [fanout.add((code,), self._tick_iterator(dataset, [code], clock.now, session)) for dataset in datasets]
+            percode_gens[code] = [fanout.add((code,), self._tick_iterator(dataset, [code], clock.now, clock.session)) for dataset in datasets]
 
         def close_percode(code: str) -> None:
             gens = percode_gens.pop(code, None)
@@ -602,66 +598,55 @@ class FastBacktestEngine:
                 if code not in percode_gens:
                     open_percode(code)
 
-        subs = self._current_subscriptions(aggregate, base)
-        reconcile(subs)
-        while fanout:
-            event = fanout.pop()
-            if event.event_time is not None and event.event_time < clock.now:
-                continue  # 重开/新增的流可能回吐早于当前时刻的事件——已处理过
+        def current_subs() -> set[str]:
+            return self._current_subscriptions(aggregate, base)
+
+        def deliver_tick(event: Any) -> None:
+            nonlocal subs
             code = getattr(event, "instrument_id", None)
             if code not in subs:
-                continue  # 分片内未订阅的 code：丢弃（数据已读，仅不喂）
+                return
             key = (getattr(event, "event_type", None), code, event.event_time, getattr(event, "sequence", None))
             if key in delivered:
-                continue
+                return
             delivered.add(key)
-            clock.advance(event.event_time)
             if isinstance(event, TradeTick) and code and event.price:
                 last_prices[code] = float(event.price)
             self._adapter.feed_market_event(event)
-            new_subs = self._current_subscriptions(aggregate, base)
+            new_subs = current_subs()
             if new_subs != subs:
                 subs = new_subs
                 reconcile(subs)
-        return last_prices
 
-    def _run_tick_replay_swap(self, session: Any, clock: SimulationClock, base: set[str], aggregate: set[str], last_prices: dict[str, float], datasets: tuple[str, ...]) -> dict[str, float]:
-        """整体换流：订阅集一变，丢弃当前流、按新集从当前时刻重开。"""
-        delivered: set[tuple] = set()
-
-        def subscriptions() -> set[str]:
-            return self._current_subscriptions(aggregate, base)
-
-        def open_stream(codes: set[str]) -> _TickFanout:
-            fanout = _TickFanout()
-            for dataset in datasets:
-                fanout.add(tuple(codes), self._tick_iterator(dataset, sorted(codes), clock.now, session))
-            return fanout
-
-        current = subscriptions()
-        if not current:
-            return last_prices
-        stream = open_stream(current)
-        while stream:
-            event = stream.pop()
-            if event.event_time is not None and event.event_time < clock.now:
+        subs = current_subs()
+        reconcile(subs)
+        while True:
+            tick = fanout.peek()
+            task = clock.peek_task()
+            if tick is None and task is None:
+                break
+            if tick is not None and tick.event_time < clock.now:
+                fanout.pop()  # 新开流可能回吐早于当前时刻的事件——已处理过
                 continue
-            key = (getattr(event, "event_type", None), getattr(event, "instrument_id", None), event.event_time, getattr(event, "sequence", None))
-            if key in delivered:
-                continue
-            delivered.add(key)
-            code = getattr(event, "instrument_id", None)
-            clock.advance(event.event_time)
-            if isinstance(event, TradeTick) and code and event.price:
-                last_prices[code] = float(event.price)
-            self._adapter.feed_market_event(event)
-            new = subscriptions()
-            if new != current:
-                current = new
-                if not current:
-                    break
-                stream = open_stream(current)
-        return last_prices
+            if task is not None and (tick is None or tick.event_time > task[0]):
+                at = task[0]
+                if at < clock.now:
+                    clock.fire_next()
+                    continue
+                clock.advance(at)  # 触发严格早于 at 的任务
+                while fanout.peek() is not None and fanout.peek().event_time == at:
+                    deliver_tick(fanout.pop())
+                while clock.peek_task() is not None and clock.peek_task()[0] == at:
+                    clock.fire_next()
+                new_subs = current_subs()  # 任务派发可能产生新的 tick 订阅
+                if new_subs != subs:
+                    subs = new_subs
+                    reconcile(subs)
+            else:
+                at = tick.event_time
+                clock.advance(at)  # 触发严格早于 at 的任务
+                while fanout.peek() is not None and fanout.peek().event_time == at:
+                    deliver_tick(fanout.pop())
 
     def _settle_day(self, price_dict: dict[str, float]) -> None:
         self.entity.daily_settle(price_dict) if isinstance(self.entity, BaseStream) else (self.account.daily_summarize(price_dict), cast(BaseStrategy, self.entity).on_day_end())
