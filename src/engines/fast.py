@@ -230,7 +230,7 @@ class FastBacktestEngine:
         clock = SimulationClock(session, start=self._day_time(session, self._schedule_times["pre_open"]))
         self._pipeline.clock = clock
         self._intraday_prices = {}
-        state: dict[str, Any] = {"bars": [], "open": {}, "close": {}, "active": set(), "base": set(), "tick": {}, "ticked": False, "aggregate_freqs": set()}
+        state: dict[str, Any] = {"bars": [], "open": {}, "close": {}, "active": set(), "base": set(), "asset_of": {}, "tick": {}, "ticked": False, "aggregate_freqs": set()}
 
         def pre_market() -> None:
             """盘前数据整理：跑日线管道、读日线并喂入、注入涨跌停、排入日内 kline。"""
@@ -248,6 +248,11 @@ class FastBacktestEngine:
             state["bars"] = bars
             state["open"] = {bar.instrument_id: float(bar.open) for bar in bars if bar.instrument_id is not None}
             state["close"] = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
+            state["asset_of"] = {
+                bar.instrument_id: getattr(bar, "asset_type", "equity")
+                for bar in bars
+                if bar.instrument_id is not None
+            }
             state["active"] = self._day_feed_codes()
             state["base"] = set(codes)
             self._inject_price_limits(session, sorted(set(state["open"]) | self._active_codes()))
@@ -394,6 +399,21 @@ class FastBacktestEngine:
             return 20
         return -(-pool_size // 9)
 
+    @staticmethod
+    def _resolve_shard_sizes(asset: str, pool_size: int) -> list[int]:
+        """按资产类型定分片大小序列。
+
+        - ``equity``：沿用动态规则（<=180->20，180~900->9片，>900->100）。
+        - ``tradable``：默认 3 片，每片范围 [36,100]（size = clamp(ceil(n/3), 36, 100)）。
+        - ``index``：不分片（单流）。
+        """
+        if asset == "index":
+            return [pool_size]
+        if asset == "tradable":
+            size = max(36, min(100, -(-pool_size // 3)))
+            return [size] * (-(-pool_size // size))
+        return [FastBacktestEngine._resolve_shard_size(pool_size)] * (-(-pool_size // FastBacktestEngine._resolve_shard_size(pool_size)))
+
     def _mark_pool_dirty(self, *_: Any) -> None:
         """因子日内增减声明代码后置脏标记；下一个流步惰性重建订阅集。"""
         self._pool_dirty = True
@@ -411,12 +431,12 @@ class FastBacktestEngine:
             codes |= self._registry.codes(kline_kind(frequency))
         return codes
 
-    def _tick_iterator(self, dataset: str, codes: list[str], start: datetime, session: Any):
+    def _tick_iterator(self, dataset: str, codes: list[str], start: datetime, session: Any, asset_type: str = "equity"):
         """按分块历史流拉取某 dataset 的 tick（惰性）；不支持 iterate 则回退 read。
 
         ``try/finally`` 保证生成器被关闭（分片全退订）时主动关掉内层流，释放数据源连接。
         """
-        request = DataRequest(dataset=dataset, instruments=tuple(codes), start=start, end=session.close)
+        request = DataRequest(dataset=dataset, instruments=tuple(codes), start=start, end=session.close, asset_type=asset_type)
         try:
             iterator = self.data_gateway.iterate(request)
         except (AttributeError, NotImplementedError):
@@ -571,16 +591,31 @@ class FastBacktestEngine:
         self._pool_dirty = True
         self._stream_base = base
         datasets = ("market.trade", "market.quote")
-        ordered = sorted(base)
-        shard_size = self.stream_shard_size if self.stream_shard_size is not None else self._resolve_shard_size(len(base))
+        # 按资产分桶（equity / tradable / index），各自用对应分片规则
+        asset_of = state["asset_of"]
+        buckets: dict[str, list[str]] = {}
+        for code in base:
+            buckets.setdefault(asset_of.get(code, "equity"), []).append(code)
         shards: dict[int, tuple[str, ...]] = {}
+        shard_asset: dict[int, str] = {}
         code_shard: dict[str, int] = {}
-        for start in range(0, len(ordered), shard_size):
-            sid = len(shards)
-            chunk = tuple(ordered[start:start + shard_size])
-            shards[sid] = chunk
-            for code in chunk:
-                code_shard[code] = sid
+        for asset, codes in sorted(buckets.items()):
+            ordered = sorted(codes)
+            if self.stream_shard_size is not None:
+                sizes = [self.stream_shard_size] * (-(-len(ordered) // self.stream_shard_size))
+            else:
+                sizes = self._resolve_shard_sizes(asset, len(ordered))
+            start = 0
+            for size in sizes:
+                if start >= len(ordered):
+                    break
+                sid = len(shards)
+                chunk = tuple(ordered[start:start + size])
+                shards[sid] = chunk
+                shard_asset[sid] = asset
+                for code in chunk:
+                    code_shard[code] = sid
+                start += size
 
         fanout = _TickFanout()
         shard_gens: dict[int, list[_Gen]] = {}
@@ -591,7 +626,8 @@ class FastBacktestEngine:
             if sid in shard_gens:
                 return
             codes = shards[sid]
-            shard_gens[sid] = [fanout.add(codes, self._tick_iterator(dataset, list(codes), clock.now, clock.session)) for dataset in datasets]
+            asset = shard_asset[sid]
+            shard_gens[sid] = [fanout.add(codes, self._tick_iterator(dataset, list(codes), clock.now, clock.session, asset)) for dataset in datasets]
 
         def close_shard(sid: int) -> None:
             gens = shard_gens.pop(sid, None)
@@ -601,7 +637,8 @@ class FastBacktestEngine:
         def open_percode(code: str) -> None:
             if code in percode_gens:
                 return
-            percode_gens[code] = [fanout.add((code,), self._tick_iterator(dataset, [code], clock.now, clock.session)) for dataset in datasets]
+            asset = asset_of.get(code, "equity")
+            percode_gens[code] = [fanout.add((code,), self._tick_iterator(dataset, [code], clock.now, clock.session, asset)) for dataset in datasets]
 
         def close_percode(code: str) -> None:
             gens = percode_gens.pop(code, None)

@@ -454,3 +454,14 @@ def test_resolve_shard_size_rules() -> None:
     assert resolve(900) == 100        # 180~900 -> 9片
     assert resolve(360) == 40         # 360/9
     assert resolve(901) == 100        # >900 -> 100/片
+
+
+def test_resolve_shard_sizes_by_asset() -> None:
+    sizes = FastBacktestEngine._resolve_shard_sizes
+    assert sizes("index", 200) == [200]                  # 指数不分片
+    assert sizes("tradable", 60) == [36, 36]             # 默认3片每片[36,100]，60 -> 2片36
+    assert sizes("tradable", 180) == [60, 60, 60]        # 180 -> 3片60
+    assert sizes("tradable", 300) == [100, 100, 100]     # 300 -> 3片100
+    tradable_100 = sizes("tradable", 100)
+    assert all(36 <= s <= 100 for s in tradable_100)     # 每片落在 [36,100]
+    assert sizes("equity", 360) == [40] * 9              # 股票沿用9片规则
