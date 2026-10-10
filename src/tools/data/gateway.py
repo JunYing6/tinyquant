@@ -514,21 +514,29 @@ class DataGateway:
                 source=descriptor.name,
                 request_id=request_id,
             )
-            for chunk in iterator:
-                try:
-                    validate_batch(
-                        chunk,
-                        definition,
-                        strict=self._policy.strict,
-                        session=None,
-                        timezone=self._policy.timezone,
-                        as_of=request.as_of,
-                    )
-                    provenance = self._build_provenance(descriptor, fingerprint, False)
-                    yield chunk.with_request_context(request_id, request.correlation_id, provenance)
-                except DataError as error:
-                    error.request_id = request_id
-                    raise
+            try:
+                for chunk in iterator:
+                    try:
+                        validate_batch(
+                            chunk,
+                            definition,
+                            strict=self._policy.strict,
+                            session=None,
+                            timezone=self._policy.timezone,
+                            as_of=request.as_of,
+                        )
+                        provenance = self._build_provenance(descriptor, fingerprint, False)
+                        yield chunk.with_request_context(request_id, request.correlation_id, provenance)
+                    except DataError as error:
+                        error.request_id = request_id
+                        raise
+            finally:
+                closer = getattr(iterator, "close", None)
+                if closer is not None:
+                    try:
+                        closer()
+                    except Exception:
+                        pass
         except DataError as error:
             error.request_id = request_id
             raise

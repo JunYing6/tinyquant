@@ -412,19 +412,30 @@ class FastBacktestEngine:
         return codes
 
     def _tick_iterator(self, dataset: str, codes: list[str], start: datetime, session: Any):
-        """按分块历史流拉取某 dataset 的 tick（惰性）；不支持 iterate 则回退 read。"""
+        """按分块历史流拉取某 dataset 的 tick（惰性）；不支持 iterate 则回退 read。
+
+        ``try/finally`` 保证生成器被关闭（分片全退订）时主动关掉内层流，释放数据源连接。
+        """
         request = DataRequest(dataset=dataset, instruments=tuple(codes), start=start, end=session.close)
         try:
             iterator = self.data_gateway.iterate(request)
         except (AttributeError, NotImplementedError):
             iterator = None
-        if iterator is None:
-            for record in self.data_gateway.read(request).records:
-                yield record
-            return
-        for chunk in iterator:
-            for record in chunk.records:
-                yield record
+        try:
+            if iterator is None:
+                for record in self.data_gateway.read(request).records:
+                    yield record
+                return
+            for chunk in iterator:
+                for record in chunk.records:
+                    yield record
+        finally:
+            closer = getattr(iterator, "close", None)
+            if closer is not None:
+                try:
+                    closer()
+                except Exception:
+                    pass
 
     def _load_intraday_klines(self, session: Any, codes: list[str]) -> dict[str, list[KlineBar]]:
         """读取各日内频率的历史 kline bar（优先数据源）；读不到的频率缺省，交给 tick 聚合。"""
