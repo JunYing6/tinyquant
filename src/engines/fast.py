@@ -138,7 +138,7 @@ class FastBacktestEngine:
                  order_cost: dict[str, float] | None = None, progress_bar: bool = True,
                  progress_callback: Any = None, data_gateway: DataGateway | None = None,
                  execution_timing: str = "next_bar_open", execution_delay: int = 1,
-                 schedule: Mapping[str, str] | None = None, stream_shard_size: int = 48) -> None:
+                 schedule: Mapping[str, str] | None = None, stream_shard_size: int | None = None) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
         if execution_timing not in _VALID_TIMINGS:
@@ -150,8 +150,8 @@ class FastBacktestEngine:
         if initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
         self._schedule_times = {**_DEFAULT_SCHEDULE, **dict(schedule or {})}
-        if not isinstance(stream_shard_size, int) or isinstance(stream_shard_size, bool) or stream_shard_size < 1:
-            raise ValueError("stream_shard_size must be a positive integer")
+        if stream_shard_size is not None and (not isinstance(stream_shard_size, int) or isinstance(stream_shard_size, bool) or stream_shard_size < 1):
+            raise ValueError("stream_shard_size must be a positive integer or None")
         self.stream_shard_size = stream_shard_size
         self.entity = entity
         self.start_date = self._normalize_date(start_date)
@@ -380,6 +380,20 @@ class FastBacktestEngine:
         if self._registry.is_subscribed(kline_kind(frequency), bar.code):
             self._adapter.feed_prebuilt_bars(frequency, [bar])
 
+    @staticmethod
+    def _resolve_shard_size(pool_size: int) -> int:
+        """按池大小自动定分片大小：
+
+        - 池 <= 180：20/片
+        - 池 180~900：固定 9 片（每片 ceil(池/9)，落在 [20,100]）
+        - 池 > 900：100/片
+        """
+        if pool_size > 900:
+            return 100
+        if pool_size < 180:
+            return 20
+        return -(-pool_size // 9)
+
     def _mark_pool_dirty(self, *_: Any) -> None:
         """因子日内增减声明代码后置脏标记；下一个流步惰性重建订阅集。"""
         self._pool_dirty = True
@@ -547,7 +561,7 @@ class FastBacktestEngine:
         self._stream_base = base
         datasets = ("market.trade", "market.quote")
         ordered = sorted(base)
-        shard_size = max(1, int(self.stream_shard_size))
+        shard_size = self.stream_shard_size if self.stream_shard_size is not None else self._resolve_shard_size(len(base))
         shards: dict[int, tuple[str, ...]] = {}
         code_shard: dict[str, int] = {}
         for start in range(0, len(ordered), shard_size):

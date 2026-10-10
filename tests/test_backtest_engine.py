@@ -444,3 +444,13 @@ def test_tick_fanout_close_drops_a_generation() -> None:
     while fanout:
         drained.append(fanout.pop().event_time)
     assert drained == [1, 3]  # B 的路已结束
+
+
+def test_resolve_shard_size_rules() -> None:
+    resolve = FastBacktestEngine._resolve_shard_size
+    assert resolve(10) == 20          # <=180 -> 20/片
+    assert resolve(180) == 20         # ==180 -> 20/片
+    assert resolve(181) == 21         # 180~900 -> 9片
+    assert resolve(900) == 100        # 180~900 -> 9片
+    assert resolve(360) == 40         # 360/9
+    assert resolve(901) == 100        # >900 -> 100/片
