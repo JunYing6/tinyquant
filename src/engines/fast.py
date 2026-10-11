@@ -193,7 +193,8 @@ class FastBacktestEngine:
                  order_cost: dict[str, float] | None = None, progress_bar: bool = True,
                  progress_callback: Any = None, data_gateway: DataGateway | None = None,
                  execution_timing: str = "next_bar_open", execution_delay: int = 1,
-                 schedule: Mapping[str, str] | None = None, stream_shard_size: int | None = None) -> None:
+                 schedule: Mapping[str, str] | None = None, stream_shard_size: int | None = None,
+                 stream_chunk_size: int = 10_000) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
         if execution_timing not in _VALID_TIMINGS:
@@ -207,7 +208,10 @@ class FastBacktestEngine:
         self._schedule_times = {**_DEFAULT_SCHEDULE, **dict(schedule or {})}
         if stream_shard_size is not None and (not isinstance(stream_shard_size, int) or isinstance(stream_shard_size, bool) or stream_shard_size < 1):
             raise ValueError("stream_shard_size must be a positive integer or None")
+        if not isinstance(stream_chunk_size, int) or isinstance(stream_chunk_size, bool) or stream_chunk_size < 1:
+            raise ValueError("stream_chunk_size must be a positive integer")
         self.stream_shard_size = stream_shard_size
+        self.stream_chunk_size = stream_chunk_size
         self.entity = entity
         self.start_date = self._normalize_date(start_date)
         self.end_date = self._normalize_date(end_date)
@@ -479,7 +483,7 @@ class FastBacktestEngine:
         """日内 kline 的流式游标（``market.bar`` 指定频率）；``try/finally`` 释放连接。"""
         request = DataRequest(dataset="market.bar", instruments=tuple(codes), start=start, end=session.close, frequency=frequency, price_basis="raw")
         try:
-            iterator = self.data_gateway.iterate(request)
+            iterator = self.data_gateway.iterate(request, self.stream_chunk_size)
         except (AttributeError, NotImplementedError):
             iterator = None
         try:
@@ -564,7 +568,7 @@ class FastBacktestEngine:
         """
         request = DataRequest(dataset=dataset, instruments=tuple(codes), start=start, end=session.close, asset_type=asset_type)
         try:
-            iterator = self.data_gateway.iterate(request)
+            iterator = self.data_gateway.iterate(request, self.stream_chunk_size)
         except (AttributeError, NotImplementedError):
             iterator = None
         try:
