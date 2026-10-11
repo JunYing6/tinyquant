@@ -49,22 +49,23 @@ class _MirrorMatcher:
 
 
 class _Gen:
-    """一路 tick 流：覆盖一个 code 子集、按 ``(event_time, sequence)`` 有序。"""
+    """一路流（tick 或某频率 kline）：覆盖一个 code 子集、按 ``(event_time, sequence)`` 有序。"""
 
-    __slots__ = ("codes", "iterator", "head", "closed")
+    __slots__ = ("codes", "iterator", "head", "closed", "priority")
 
-    def __init__(self, codes: frozenset[str], iterator: Any) -> None:
+    def __init__(self, codes: frozenset[str], iterator: Any, priority: int = 0) -> None:
         self.codes = codes
         self.iterator = iterator
         self.head: Any = None
         self.closed = False
+        self.priority = priority
 
 
 class _TickFanout:
-    """多路 tick 流的归并器：支持**随时增路/闭路**，同刻先 tick 后 kline 由时钟保证。
+    """多路流的归并器：支持**随时增路/闭路**。
 
-    每个 code 只属于一路，故不会重复投递。增路用于新订阅（如越界码单开流），
-    闭路用于某路子集全部退订。
+    同刻按 ``priority`` 排序（tick=0 < kline=1），同一路内按 ``(event_time, sequence)`` 有序。
+    每个 code 只属于一路，故不会重复投递。
     """
 
     def __init__(self) -> None:
@@ -73,16 +74,17 @@ class _TickFanout:
         self._counter = 0
 
     @staticmethod
-    def _key(event: Any) -> tuple[Any, Any]:
-        return (event.event_time, getattr(event, "sequence", 0) or 0)
+    def _key(gen: _Gen) -> tuple[Any, ...]:
+        event = gen.head
+        return (event.event_time, gen.priority, getattr(event, "sequence", 0) or 0)
 
     def _pull(self, gen: _Gen) -> None:
         if gen.closed or gen.head is not None:
             return
         gen.head = next(gen.iterator, None)
 
-    def add(self, codes: Iterable[str], iterator: Any) -> _Gen:
-        gen = _Gen(frozenset(codes), iterator)
+    def add(self, codes: Iterable[str], iterator: Any, priority: int = 0) -> _Gen:
+        gen = _Gen(frozenset(codes), iterator, priority)
         self._gens.append(gen)
         self._pull(gen)
         self._rebuild()
@@ -105,7 +107,7 @@ class _TickFanout:
         self._heap = []
         for index, gen in enumerate(self._gens):
             if gen.head is not None and not gen.closed:
-                heappush(self._heap, (self._key(gen.head), self._counter, index))
+                heappush(self._heap, (self._key(gen), self._counter, index))
                 self._counter += 1
 
     def __bool__(self) -> bool:
@@ -126,9 +128,62 @@ class _TickFanout:
         gen.head = None
         self._pull(gen)
         if gen.head is not None and not gen.closed:
-            heappush(self._heap, (self._key(gen.head), self._counter, index))
+            heappush(self._heap, (self._key(gen), self._counter, index))
             self._counter += 1
         return event
+
+
+class _ShardSource:
+    """一路流（tick 或某频率 kline）的分片 fan-out：按订阅**增量开/闭分片** + 越界码单流。
+
+    - 订阅命中某分片任一 code → 开该分片；退订至该分片无订阅 → 闭路（释放流）。
+    - 池外（不在任何分片）的订阅 code → 单开一路；退订即闭。
+    - 后续该分片再恢复订阅 → 重新开（走同一逻辑）。
+    """
+
+    def __init__(self, shards, code_shard, factory, fanout, now, priority, meta_of=None):
+        self._shards = shards          # sid -> (codes tuple, meta)
+        self._code_shard = code_shard
+        self._factory = factory        # (codes, meta, start) -> list[iterator]
+        self._fanout = fanout
+        self._now = now                # () -> datetime
+        self.priority = priority
+        self._meta_of = meta_of        # (code) -> meta（越界码）
+        self._shard_gens: dict[int, list[_Gen]] = {}
+        self._percode_gens: dict[str, list[_Gen]] = {}
+
+    def reconcile(self, subs: set[str]) -> None:
+        for sid, (codes, meta) in self._shards.items():
+            if sid in self._shard_gens:
+                if not (set(codes) & subs):
+                    self._close_shard(sid)
+            elif set(codes) & subs:
+                self._open_shard(sid)
+        out_of_pool = {code for code in subs if code not in self._code_shard}
+        for code in list(self._percode_gens):
+            if code not in out_of_pool:
+                self._close_percode(code)
+        for code in out_of_pool:
+            if code not in self._percode_gens:
+                self._open_percode(code)
+
+    def _open_shard(self, sid: int) -> None:
+        codes, meta = self._shards[sid]
+        self._shard_gens[sid] = [self._fanout.add(codes, it, self.priority) for it in self._factory(list(codes), meta, self._now())]
+
+    def _close_shard(self, sid: int) -> None:
+        gens = self._shard_gens.pop(sid, None)
+        if gens:
+            self._fanout.close(gens)
+
+    def _open_percode(self, code: str) -> None:
+        meta = self._meta_of(code) if self._meta_of else None
+        self._percode_gens[code] = [self._fanout.add((code,), it, self.priority) for it in self._factory([code], meta, self._now())]
+
+    def _close_percode(self, code: str) -> None:
+        gens = self._percode_gens.pop(code, None)
+        if gens:
+            self._fanout.close(gens)
 
 
 class FastBacktestEngine:
@@ -230,7 +285,7 @@ class FastBacktestEngine:
         clock = SimulationClock(session, start=self._day_time(session, self._schedule_times["pre_open"]))
         self._pipeline.clock = clock
         self._intraday_prices = {}
-        state: dict[str, Any] = {"bars": [], "open": {}, "close": {}, "active": set(), "base": set(), "asset_of": {}, "tick": {}, "ticked": False, "aggregate_freqs": set()}
+        state: dict[str, Any] = {"bars": [], "open": {}, "close": {}, "active": set(), "base": set(), "asset_of": {}, "historic_freqs": set(), "tick": {}, "ticked": False, "aggregate_freqs": set()}
 
         def pre_market() -> None:
             """盘前数据整理：跑日线管道、读日线并喂入、注入涨跌停、排入日内 kline。"""
@@ -260,18 +315,16 @@ class FastBacktestEngine:
                 if state["active"] and bar.instrument_id and bar.instrument_id not in state["active"]:
                     continue  # 因子已 drop：跳过该标的数据（流式提速）
                 self._adapter.feed_daily_bar(bar)
-            # 日内 kline（择时 ∪ 风控）走同一条路径：历史优先，缺者交 tick 聚合；
-            # 有历史的频率置为外部来源（tick 重放不再聚合），随后按各自 end_time 排入时钟。
-            # 投喂按订阅过滤：某 code 的该频率无人订阅就不喂（用不到不空转）。
-            historic = self._load_intraday_klines(session, codes)
+            # 日内 kline（择时 ∪ 风控）走同一条路径：历史优先，缺者交 tick 聚合。
+            # 有历史的频率置为外部来源（tick 重放不再聚合该频率），其数据由
+            # ``_run_intraday_clock`` 以**流式游标**拉取（低频单流 / 高频分片）。
+            desired = self._intraday_frequencies()
+            historic = self._probe_intraday_history(session, desired, codes)
             for frequency in historic:
                 self._adapter.mark_external_frequency(frequency)
             self._sync_stream_subscriptions(state["base"])
-            for frequency in sorted(historic):
-                for bar in historic[frequency]:
-                    when = bar.end_time if isinstance(bar.end_time, datetime) else clock.now
-                    clock.push_kline(when, bar, lambda b=bar, f=frequency: self._emit_kline(f, b))
-            state["aggregate_freqs"] = self._intraday_frequencies() - set(historic)
+            state["historic_freqs"] = historic
+            state["aggregate_freqs"] = desired - historic
             state["ticked"] = self._needs_intraday() or bool(state["aggregate_freqs"])
 
         # 时间轴：盘前整理 → 开盘调仓（开盘价）→（日内 tick/kline）→ 尾盘调仓（末价/收盘价）
@@ -381,9 +434,82 @@ class FastBacktestEngine:
         return set(base)
 
     def _emit_kline(self, frequency: str, bar: KlineBar) -> None:
-        """按订阅投喂单根历史日内 kline：该 code 的该频率无人订阅则跳过。"""
+        """（保留：外部直接投喂单根 kline 时按订阅过滤。）"""
         if self._registry.is_subscribed(kline_kind(frequency), bar.code):
             self._adapter.feed_prebuilt_bars(frequency, [bar])
+
+    @staticmethod
+    def _freq_seconds(frequency: str) -> int:
+        """频率 -> 秒数（如 ``30m``->1800，``15s``->15，``1h``->3600）。"""
+        unit = frequency[-1]
+        count = int(frequency[:-1] or 1)
+        return count * {"s": 1, "m": 60, "h": 3600}[unit]
+
+    def _kline_shards(self, base: set[str], frequency: str):
+        """按频率给 kline 池分片：
+
+        - 间隔 < 1min（高频 kline）：5 片，每片大小夹在 [120, 360]。
+        - 否则（>=1min，低频 kline）：单流不分片。
+        返回 ``(shards, code_shard)``；``shards[sid]`` 与 tick 一致为 codes 元组。
+        """
+        ordered = sorted(base)
+        pool = len(ordered)
+        if pool == 0:
+            return {}, {}
+        if self._freq_seconds(frequency) < 60:
+            size = max(120, min(360, -(-pool // 5)))
+            sizes = [size] * (-(-pool // size))
+        else:
+            sizes = [pool]
+        shards: dict[int, tuple[tuple[str, ...], Any]] = {}
+        code_shard: dict[str, int] = {}
+        start = 0
+        for size in sizes:
+            if start >= pool:
+                break
+            sid = len(shards)
+            chunk = tuple(ordered[start:start + size])
+            shards[sid] = (chunk, None)
+            for code in chunk:
+                code_shard[code] = sid
+            start += size
+        return shards, code_shard
+
+    def _kline_iterator(self, frequency: str, codes: list[str], start: datetime, session: Any):
+        """日内 kline 的流式游标（``market.bar`` 指定频率）；``try/finally`` 释放连接。"""
+        request = DataRequest(dataset="market.bar", instruments=tuple(codes), start=start, end=session.close, frequency=frequency, price_basis="raw")
+        try:
+            iterator = self.data_gateway.iterate(request)
+        except (AttributeError, NotImplementedError):
+            iterator = None
+        try:
+            if iterator is None:
+                for record in self.data_gateway.read(request).records:
+                    yield record
+                return
+            for chunk in iterator:
+                for record in chunk.records:
+                    yield record
+        finally:
+            closer = getattr(iterator, "close", None)
+            if closer is not None:
+                try:
+                    closer()
+                except Exception:
+                    pass
+
+    def _probe_intraday_history(self, session: Any, freqs: set[str], codes: list[str]) -> set[str]:
+        """探测哪些日内频率当天有历史 bar（用少量代码轻量试读，不整批预读）。"""
+        historic: set[str] = set()
+        probe = tuple(codes[:5]) if codes else None
+        for frequency in sorted(freqs):
+            try:
+                batch = self.data_gateway.read(DataRequest(dataset="market.bar", instruments=probe, start=session.open, end=session.close, frequency=frequency, fields=("close",), price_basis="raw"))
+            except Exception:
+                continue
+            if batch.records:
+                historic.add(frequency)
+        return historic
 
     @staticmethod
     def _resolve_shard_size(pool_size: int) -> int:
@@ -456,33 +582,6 @@ class FastBacktestEngine:
                     closer()
                 except Exception:
                     pass
-
-    def _load_intraday_klines(self, session: Any, codes: list[str]) -> dict[str, list[KlineBar]]:
-        """读取各日内频率的历史 kline bar（优先数据源）；读不到的频率缺省，交给 tick 聚合。"""
-        instruments = tuple(codes) if codes else None
-        historic: dict[str, list[KlineBar]] = {}
-        for frequency in sorted(self._intraday_frequencies()):
-            try:
-                batch = self.data_gateway.read(DataRequest(
-                    dataset="market.bar", instruments=instruments,
-                    start=session.open, end=session.close, frequency=frequency, price_basis="raw",
-                ))
-            except Exception:
-                continue
-            records = sorted((r for r in batch.records if isinstance(r, Bar)), key=lambda b: b.interval_end)
-            bars = [
-                KlineBar(
-                    code=bar.instrument_id or "",
-                    frequency=frequency,
-                    end_time=bar.interval_end,
-                    open=float(bar.open), high=float(bar.high), low=float(bar.low), close=float(bar.close),
-                    volume=float(bar.volume), amount=float(bar.turnover),
-                )
-                for bar in records
-            ]
-            if bars:
-                historic[frequency] = bars
-        return historic
 
     def _on_risk_bar(self, bar: KlineBar) -> None:
         """风控日内 kline bar 完成：按最新价结算开盘池（风控下降即时卖）。"""
@@ -579,11 +678,12 @@ class FastBacktestEngine:
                     self.entity.replicate_close_orders(strategy.strategy_name, orders)
 
     def _run_intraday_clock(self, clock: SimulationClock, state: dict[str, Any]) -> None:
-        """时钟**自主**推进：tick 只是挂进来的一路事件源，kline/定时任务由时钟自己到点触发。
+        """时钟**自主**推进：tick 与日内 kline 都是挂进来的流式事件源，定时任务到点触发。
 
-        主循环取"最早的一笔 tick"与"最早到期的定时任务"，把时钟推进到两者**更早**的那个时刻：
-        到点先派发该时刻的全部 tick（同刻先 tick 后 kline），再触发该时刻的定时任务。纯 kline
-        （无 tick）时，时钟就逐任务推进——不再依赖 tick 把时钟往前顶。
+        - tick 源：按资产分片（equity/index/tradable 各自规则）。
+        - 日内 kline 源：每个有历史的频率一路流——`<1min` 分 5 片、`>=1min` 单流；同样订阅制。
+        - 所有源合并在一个 `_TickFanout`：键 `(event_time, priority)`，故**同刻先 tick（0）后 kline（1）**。
+        - 每笔事件后惰性对账订阅集；分片全退订则闭路，恢复订阅则重开/单开。
         """
         base = set(state["open"]) | self._active_codes()
         aggregate = set(state["aggregate_freqs"])
@@ -591,14 +691,16 @@ class FastBacktestEngine:
         self._pool_dirty = True
         self._stream_base = base
         datasets = ("market.trade", "market.quote")
-        # 按资产分桶（equity / tradable / index），各自用对应分片规则
         asset_of = state["asset_of"]
+        fanout = _TickFanout()
+        delivered: set[tuple] = set()
+
+        # --- tick 源：按资产分桶分片 ---
         buckets: dict[str, list[str]] = {}
         for code in base:
             buckets.setdefault(asset_of.get(code, "equity"), []).append(code)
-        shards: dict[int, tuple[str, ...]] = {}
-        shard_asset: dict[int, str] = {}
-        code_shard: dict[str, int] = {}
+        tick_shards: dict[int, tuple[tuple[str, ...], str]] = {}
+        tick_code_shard: dict[str, int] = {}
         for asset, codes in sorted(buckets.items()):
             ordered = sorted(codes)
             if self.stream_shard_size is not None:
@@ -609,64 +711,59 @@ class FastBacktestEngine:
             for size in sizes:
                 if start >= len(ordered):
                     break
-                sid = len(shards)
+                sid = len(tick_shards)
                 chunk = tuple(ordered[start:start + size])
-                shards[sid] = chunk
-                shard_asset[sid] = asset
+                tick_shards[sid] = (chunk, asset)
                 for code in chunk:
-                    code_shard[code] = sid
+                    tick_code_shard[code] = sid
                 start += size
 
-        fanout = _TickFanout()
-        shard_gens: dict[int, list[_Gen]] = {}
-        percode_gens: dict[str, list[_Gen]] = {}
-        delivered: set[tuple] = set()
+        def tick_factory(codes: list[str], asset: str, start: datetime):
+            return [self._tick_iterator(dataset, codes, start, clock.session, asset) for dataset in datasets]
 
-        def open_shard(sid: int) -> None:
-            if sid in shard_gens:
-                return
-            codes = shards[sid]
-            asset = shard_asset[sid]
-            shard_gens[sid] = [fanout.add(codes, self._tick_iterator(dataset, list(codes), clock.now, clock.session, asset)) for dataset in datasets]
+        tick_src = _ShardSource(tick_shards, tick_code_shard, tick_factory, fanout, lambda: clock.now, 0, meta_of=lambda code: asset_of.get(code, "equity"))
 
-        def close_shard(sid: int) -> None:
-            gens = shard_gens.pop(sid, None)
-            if gens:
-                fanout.close(gens)
+        # --- 日内 kline 源：每个有历史的频率一路（低频单流 / 高频 5 片） ---
+        kline_srcs: dict[str, _ShardSource] = {}
+        for frequency in sorted(state.get("historic_freqs", ())):
+            k_shards, k_code_shard = self._kline_shards(base, frequency)
 
-        def open_percode(code: str) -> None:
-            if code in percode_gens:
-                return
-            asset = asset_of.get(code, "equity")
-            percode_gens[code] = [fanout.add((code,), self._tick_iterator(dataset, [code], clock.now, clock.session, asset)) for dataset in datasets]
+            def kline_factory(codes: list[str], meta: Any, start: datetime, F: str = frequency):
+                return [self._kline_iterator(F, codes, start, clock.session)]
 
-        def close_percode(code: str) -> None:
-            gens = percode_gens.pop(code, None)
-            if gens:
-                fanout.close(gens)
+            kline_srcs[frequency] = _ShardSource(k_shards, k_code_shard, kline_factory, fanout, lambda: clock.now, 1)
 
-        def reconcile(subs: set[str]) -> None:
-            for sid, codes in shards.items():
-                if sid in shard_gens:
-                    if not (set(codes) & subs):
-                        close_shard(sid)
-                elif set(codes) & subs:
-                    open_shard(sid)
-            out_of_pool = {code for code in subs if code not in code_shard}
-            for code in list(percode_gens):
-                if code not in out_of_pool:
-                    close_percode(code)
-            for code in out_of_pool:
-                if code not in percode_gens:
-                    open_percode(code)
-
-        def current_subs() -> set[str]:
+        # --- 订阅对账 ---
+        def tick_subs() -> set[str]:
             return self._current_subscriptions(aggregate, base)
 
-        def deliver_tick(event: Any) -> None:
-            nonlocal subs
+        def kline_subs(frequency: str) -> set[str]:
+            return set(self._registry.codes(kline_kind(frequency)))
+
+        cur_tick = tick_subs()
+        tick_src.reconcile(cur_tick)
+        cur_kline = {frequency: kline_subs(frequency) for frequency in kline_srcs}
+        for frequency, source in kline_srcs.items():
+            source.reconcile(cur_kline[frequency])
+
+        def resync() -> None:
+            nonlocal cur_tick, cur_kline
+            new_tick = tick_subs()
+            if new_tick != cur_tick:
+                cur_tick = new_tick
+                tick_src.reconcile(new_tick)
+            for frequency, source in kline_srcs.items():
+                new = kline_subs(frequency)
+                if new != cur_kline[frequency]:
+                    cur_kline[frequency] = new
+                    source.reconcile(new)
+
+        def deliver(event: Any) -> None:
             code = getattr(event, "instrument_id", None)
-            if code not in subs:
+            if isinstance(event, Bar):
+                if code not in cur_kline.get(getattr(event, "frequency", ""), set()):
+                    return
+            elif code not in cur_tick:
                 return
             key = (getattr(event, "event_type", None), code, event.event_time, getattr(event, "sequence", None))
             if key in delivered:
@@ -674,41 +771,46 @@ class FastBacktestEngine:
             delivered.add(key)
             if isinstance(event, TradeTick) and code and event.price:
                 last_prices[code] = float(event.price)
-            self._adapter.feed_market_event(event)
-            new_subs = current_subs()
-            if new_subs != subs:
-                subs = new_subs
-                reconcile(subs)
+            if isinstance(event, Bar):
+                self._adapter.feed_prebuilt_bars(event.frequency, [self._bar_to_kline(event)])
+            else:
+                self._adapter.feed_market_event(event)
+            resync()
 
-        subs = current_subs()
-        reconcile(subs)
         while True:
-            tick = fanout.peek()
+            head = fanout.peek()
             task = clock.peek_task()
-            if tick is None and task is None:
+            if head is None and task is None:
                 break
-            if tick is not None and tick.event_time < clock.now:
+            if head is not None and head.event_time < clock.now:
                 fanout.pop()  # 新开流可能回吐早于当前时刻的事件——已处理过
                 continue
-            if task is not None and (tick is None or tick.event_time > task[0]):
+            if task is not None and (head is None or head.event_time > task[0]):
                 at = task[0]
                 if at < clock.now:
                     clock.fire_next()
                     continue
                 clock.advance(at)  # 触发严格早于 at 的任务
                 while fanout.peek() is not None and fanout.peek().event_time == at:
-                    deliver_tick(fanout.pop())
+                    deliver(fanout.pop())
                 while clock.peek_task() is not None and clock.peek_task()[0] == at:
                     clock.fire_next()
-                new_subs = current_subs()  # 任务派发可能产生新的 tick 订阅
-                if new_subs != subs:
-                    subs = new_subs
-                    reconcile(subs)
+                resync()  # 任务派发可能产生新订阅
             else:
-                at = tick.event_time
+                at = head.event_time
                 clock.advance(at)  # 触发严格早于 at 的任务
                 while fanout.peek() is not None and fanout.peek().event_time == at:
-                    deliver_tick(fanout.pop())
+                    deliver(fanout.pop())
+
+    @staticmethod
+    def _bar_to_kline(bar: Any) -> KlineBar:
+        return KlineBar(
+            code=bar.instrument_id or "",
+            frequency=bar.frequency,
+            end_time=bar.interval_end,
+            open=float(bar.open), high=float(bar.high), low=float(bar.low), close=float(bar.close),
+            volume=float(bar.volume), amount=float(bar.turnover),
+        )
 
     def _settle_day(self, price_dict: dict[str, float]) -> None:
         self.entity.daily_settle(price_dict) if isinstance(self.entity, BaseStream) else (self.account.daily_summarize(price_dict), cast(BaseStrategy, self.entity).on_day_end())

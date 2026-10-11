@@ -465,3 +465,24 @@ def test_resolve_shard_sizes_by_asset() -> None:
     tradable_100 = sizes("tradable", 100)
     assert all(36 <= s <= 100 for s in tradable_100)     # 每片落在 [36,100]
     assert sizes("equity", 360) == [40] * 9              # 股票沿用9片规则
+
+
+def test_freq_seconds_and_kline_shards() -> None:
+    engine = FastBacktestEngine(BuyingFastStrategy(), "20240102", "20240102", mode="fast", data_gateway=_gateway(BARS), progress_bar=False)
+    assert engine._freq_seconds("30m") == 1800
+    assert engine._freq_seconds("1m") == 60
+    assert engine._freq_seconds("15s") == 15
+    assert engine._freq_seconds("1h") == 3600
+
+    # >=1min：单流不分片
+    shards, _ = engine._kline_shards({f"C{i}" for i in range(1000)}, "30m")
+    assert len(shards) == 1 and len(shards[0][0]) == 1000
+    shards_1m, _ = engine._kline_shards({f"C{i}" for i in range(1000)}, "1m")
+    assert len(shards_1m) == 1
+
+    # <1min：分5片，每片 [120,360]
+    hi, _ = engine._kline_shards({f"C{i}" for i in range(900)}, "15s")
+    sizes = [len(codes) for codes, _meta in hi.values()]
+    assert len(hi) == 5 and all(120 <= s <= 360 for s in sizes)
+    hi2, _ = engine._kline_shards({f"C{i}" for i in range(2000)}, "15s")
+    assert all(120 <= len(codes) <= 360 for codes, _meta in hi2.values())
