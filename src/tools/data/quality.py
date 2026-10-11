@@ -19,7 +19,7 @@ from .errors import DataContractError, PointInTimeError, UnsupportedDatasetError
 
 _NON_NEGATIVE_UNITS = frozenset(
     {
-        "price", "quantity", "currency", "factor", "count", "level", "revision",
+        "price", "quantity", "factor", "count", "level", "revision",
         "years", "month", "year", "frequency",
     }
 )
