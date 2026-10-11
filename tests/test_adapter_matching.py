@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trading_nodes_base.factors import KlineTimingFactor
+from trading_nodes_base.factors import IntradayKlineFactor
 from trading_nodes_base.methods import BaseTimeSelection
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.types import ExecutionRequest, KlineBar, SignalIntent
@@ -59,7 +59,7 @@ def test_match_strategy_fills_market_order_on_tick():
     assert fills and fills[0][3] == 15.0 and fills[0][4] == 100
 
 
-class _Emit30m(KlineTimingFactor):
+class _Emit30m(IntradayKlineFactor):
     frequency = "30m"
     emitted_actions = frozenset({"BUY"})
 

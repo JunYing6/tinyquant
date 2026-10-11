@@ -19,9 +19,9 @@ from trading_nodes_base.factors import (
     BaseFactor,
     BinarySelectionFactor,
     FloatSelectionFactor,
-    KlineTimingFactor,
-    RiskKlineFactor,
-    TickTimingFactor,
+    NonIntradayKlineFactor,
+    RiskNonIntradayKlineFactor,
+    TickStreamFactor,
 )
 from trading_nodes_base.methods import (
     BaseRiskControl,
@@ -191,7 +191,7 @@ class Picker(BaseStockPicking):
         return pd.DataFrame({"asset": ["000001.SZ"], "weight": [1.0]})
 
 
-class KlineFactor(KlineTimingFactor):
+class KlineFactor(NonIntradayKlineFactor):
     emitted_actions = frozenset({"BUY"})
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
@@ -202,7 +202,7 @@ class KlineFactor(KlineTimingFactor):
         return [SignalIntent(bar.code, "BUY", bar.end_time, "entry")]
 
 
-class HistoryClearingKlineFactor(KlineTimingFactor):
+class HistoryClearingKlineFactor(NonIntradayKlineFactor):
     emitted_actions = frozenset({"BUY"})
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
@@ -211,7 +211,7 @@ class HistoryClearingKlineFactor(KlineTimingFactor):
         return [{"scope": "market/daily", "params": {"date": date, "fields": ["close"]}}]
 
 
-class TickFactor(TickTimingFactor):
+class TickFactor(TickStreamFactor):
 
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
@@ -230,7 +230,7 @@ class TickFactor(TickTimingFactor):
         ] if intents else []
 
 
-class DirectTickFactor(TickTimingFactor):
+class DirectTickFactor(TickStreamFactor):
     action = "BUY"
     volume = 100
 
@@ -255,7 +255,7 @@ class Timer(BaseTimeSelection):
         super().__init__("timer", [KlineFactor("kline")], [TickFactor("tick")])
 
 
-class RiskBarFactor(RiskKlineFactor):
+class RiskBarFactor(RiskNonIntradayKlineFactor):
     def get_query_lst(self, date: str, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
         return []
@@ -484,7 +484,7 @@ def test_timer_does_not_consume_pending_on_tick_signals() -> None:
 
 
 def test_timer_drops_zero_sizing_tick_signal() -> None:
-    class ZeroTick(TickTimingFactor):
+    class ZeroTick(TickStreamFactor):
         def get_query_lst(self, date, codes=None):
             self._data_clear()
             return []

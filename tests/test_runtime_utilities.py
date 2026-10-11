@@ -14,7 +14,7 @@ from engines.core.slippage import SlippageModel
 from engines.core.trading_adapter import TradingContractAdapter
 from engines.core.trading_clock import TradingDayContext
 from tools.data import Bar, DataBatch, DataProvenance, DataRequest, QualityReport, TradeTick
-from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
+from trading_nodes_base.factors import IntradayKlineFactor, TickStreamFactor
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
 from trading_nodes_base.methods import BaseTimeSelection
 from trading_nodes_base.strategies import BaseStrategy
@@ -243,7 +243,7 @@ def test_tick_matcher_reports_partial_account_fill_and_retries_remainder() -> No
     assert events[-1]["filled_volume"] == 100
 
 
-class RecordingKlineFactor(KlineTimingFactor):
+class RecordingKlineFactor(IntradayKlineFactor):
     frequency = "1m"
 
     def __init__(self) -> None:
@@ -259,7 +259,7 @@ class RecordingKlineFactor(KlineTimingFactor):
         return []
 
 
-class NoopTickFactor(TickTimingFactor):
+class NoopTickFactor(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("noop-tick")
 

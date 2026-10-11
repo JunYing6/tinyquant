@@ -9,7 +9,7 @@ import pytest
 from engines.core.pipeline import DataProviderError
 from engines.fast import FastBacktestEngine, _TickFanout
 from tools.data import Bar, DataContractError, DataRequest, InMemoryGateway, Session, TradeTick, TradingPhase
-from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
+from trading_nodes_base.factors import NonIntradayKlineFactor, TickStreamFactor
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, SignalIntent
 from trading_nodes_base.methods import BaseStockPicking, BaseTimeSelection
 from trading_nodes_base.minds import BaseMind
@@ -36,7 +36,7 @@ def _gateway(bars: list[Bar], events: list[Any] | None = None, days: list[str] |
     return InMemoryGateway(bars=bars, events=events or [], sessions=[_session(day) for day in days])
 
 
-class PassiveKlineFactor(KlineTimingFactor):
+class PassiveKlineFactor(NonIntradayKlineFactor):
     def __init__(self) -> None:
         super().__init__("passive-kline")
 
@@ -48,22 +48,11 @@ class PassiveKlineFactor(KlineTimingFactor):
         return []
 
 
-class PassiveIntentExecutor(TickTimingFactor):
-    execution_role = "intent_executor"
-
-    def __init__(self) -> None:
-        super().__init__("passive-executor")
-
-    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
-        self._data_clear()
-        return []
-
-
 class BuyingFastStrategy(BaseStrategy):
     supports_fast_backtest = True
 
     def __init__(self, name: str = "fast") -> None:
-        timer = BaseTimeSelection(f"{name}-timer", [PassiveKlineFactor()], [PassiveIntentExecutor()])
+        timer = BaseTimeSelection(f"{name}-timer", [PassiveKlineFactor()], [])
         super().__init__(name, timer=timer)
         self._queued_once = False
 
@@ -76,7 +65,7 @@ class BuyingFastStrategy(BaseStrategy):
             self._queued_once = True
 
 
-class DirectBuyTickFactor(TickTimingFactor):
+class DirectBuyTickFactor(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("direct-buy")
         self.fired = False
@@ -97,7 +86,7 @@ class TickStrategy(BaseStrategy):
         super().__init__(name, timer=BaseTimeSelection(f"{name}-timer", [], [DirectBuyTickFactor()]))
 
 
-class SequenceRecordingFactor(TickTimingFactor):
+class SequenceRecordingFactor(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("sequence-recording")
         self.prices: list[float] = []
@@ -117,7 +106,7 @@ class SequenceTickStrategy(BaseStrategy):
         super().__init__("sequence-tick", timer=BaseTimeSelection("sequence-tick-timer", [], [self.factor]))
 
 
-class NextBarBuyFactor(KlineTimingFactor):
+class NextBarBuyFactor(NonIntradayKlineFactor):
     emitted_actions = frozenset({"BUY"})
 
     def __init__(self) -> None:
@@ -139,10 +128,10 @@ class NextBarFastStrategy(BaseStrategy):
     supports_fast_backtest = True
 
     def __init__(self) -> None:
-        super().__init__("next-bar", timer=BaseTimeSelection("next-bar-timer", [NextBarBuyFactor()], [PassiveIntentExecutor()]))
+        super().__init__("next-bar", timer=BaseTimeSelection("next-bar-timer", [NextBarBuyFactor()], []))
 
 
-class SizingBarFactor(KlineTimingFactor):
+class SizingBarFactor(NonIntradayKlineFactor):
     emitted_actions = frozenset({"BUY"})
 
     def __init__(self) -> None:
@@ -164,7 +153,7 @@ class SizingFastStrategy(BaseStrategy):
     supports_fast_backtest = True
 
     def __init__(self) -> None:
-        super().__init__("sizing", timer=BaseTimeSelection("sizing-timer", [SizingBarFactor()], [PassiveIntentExecutor()]))
+        super().__init__("sizing", timer=BaseTimeSelection("sizing-timer", [SizingBarFactor()], []))
 
 
 class EqualMind(BaseMind):
@@ -314,7 +303,7 @@ class _BothPicking(BaseStockPicking):
         return self._pd.DataFrame({"asset": self.codes, "weight": [1.0 / len(self.codes)] * len(self.codes)})
 
 
-class _TargetedTickFactor(TickTimingFactor):
+class _TargetedTickFactor(TickStreamFactor):
     def __init__(self, codes: list[str]) -> None:
         super().__init__("targeted-tick")
         self._required = list(codes)
@@ -373,7 +362,7 @@ def test_tick_replay_reads_only_subscribed_codes() -> None:
     assert set(strategy.factor.seen) == {"000001.SZ"}
 
 
-class _RecordingBothFactor(TickTimingFactor):
+class _RecordingBothFactor(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("record-both")
         self.seen: list[tuple[str, str]] = []

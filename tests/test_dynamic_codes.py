@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from trading_nodes_base.methods import BaseTimeSelection
-from trading_nodes_base.factors import TickTimingFactor
+from trading_nodes_base.factors import TickStreamFactor
 
 
-class _Noop(TickTimingFactor):
+class _Noop(TickStreamFactor):
     accepted_intent_actions = frozenset()
-    execution_role = "intent_executor"
 
     def __init__(self):
         super().__init__("noop")
@@ -19,9 +18,8 @@ class _Noop(TickTimingFactor):
         return []
 
 
-class _Decl(TickTimingFactor):
+class _Decl(TickStreamFactor):
     accepted_intent_actions = frozenset()
-    execution_role = "intent_executor"
 
     def __init__(self, needed):
         super().__init__("decl")

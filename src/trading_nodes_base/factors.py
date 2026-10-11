@@ -83,6 +83,11 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         self._active_history_generation: Optional[int] = None
         self._consumed_generation: Optional[int] = None
         self._legacy_generation = False
+        # 数据需求/目标代码（择时器、风控器统一按此聚合与分发；流式/声明式通用）。
+        self._target_codes: Set[str] = set()
+        self._targets_configured = False
+        self._needed: Set[str] = set()
+        self._on_needs_change: Optional[Any] = None
 
     def __getattr__(self, name: str) -> Any:
         params = self.__dict__.get("params", {})
@@ -92,6 +97,49 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
 
     def set_node_prefix(self, prefix: str) -> None:
         self._node_prefix = prefix
+
+    def set_needs_callback(self, callback: Optional[Any]) -> None:
+        self._on_needs_change = callback
+
+    def set_needed(self, codes: Optional[Sequence[str]]) -> None:
+        self._needed = set(codes or ())
+        self._target_codes = set(self._needed)
+        self._targets_configured = bool(self._needed)
+        self._notify_needs_change()
+
+    def drop_required_codes(self, code: str) -> None:
+        if code not in self._needed:
+            return
+        self._needed.discard(code)
+        self._target_codes.discard(code)
+        if not self._target_codes:
+            self._targets_configured = False
+        self._notify_needs_change()
+
+    def _notify_needs_change(self) -> None:
+        if self._on_needs_change is not None:
+            self._on_needs_change(self)
+
+    def required_codes(
+        self,
+        pool: Optional[List[str]] = None,
+        positions: Optional[Dict[str, Any]] = None,
+        account_info: Optional[Dict[str, Any]] = None,
+        **extra: Any,
+    ) -> List[str]:
+        """数据需求声明钩子：返回本因子需要获取 tick/K 线数据的代码集合。
+
+        基类默认返回 ``set_needed`` 声明的代码（未声明则返回 []）；子类可覆写。
+        因子可通过 ``drop_required_codes`` 在日内缩减自身需求，择时器据此重聚合。
+        """
+        return list(self._needed)
+
+    def is_target_code(self, code: str) -> bool:
+        return not self._targets_configured or code in self._target_codes
+
+    def _set_target_codes(self, codes: Optional[List[str]]) -> None:
+        self._target_codes = set(codes or ())
+        self._targets_configured = bool(codes)
 
     @property
     def state(self) -> Any:
@@ -231,6 +279,8 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
             self._active_history_generation,
             self._consumed_generation,
             self._legacy_generation,
+            set(self._target_codes),
+            self._targets_configured,
         )
 
     def _restore_request_state(self, state: tuple[Any, ...]) -> None:
@@ -247,6 +297,8 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
             active_history_generation,
             consumed_generation,
             legacy_generation,
+            target_codes,
+            targets_configured,
         ) = state
         self._received_data.clear()
         self._received_data.update(received_data)
@@ -265,6 +317,8 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
         self._active_history_generation = active_history_generation
         self._consumed_generation = consumed_generation
         self._legacy_generation = legacy_generation
+        self._target_codes = set(target_codes)
+        self._targets_configured = targets_configured
 
     def _data_clear(self) -> None:
         """准备一次不影响历史数据的传统直连因子请求。"""
@@ -324,100 +378,132 @@ class BaseFactor(ABC, metaclass=_GovernedFactorMeta):
     def on_tick(self, tick: Dict[str, Any]) -> Optional[Any]:
         return None
 
+    def stream_requirement(
+        self, codes: Optional[Sequence[str]] = None
+    ) -> Optional[Tuple[str, Optional[str], List[str]]]:
+        """数据供给方式声明：流式因子返回 ``(kind, frequency, codes)``，声明式返回 ``None``。"""
+        return None
+
     def __repr__(self) -> str:
         return f"<{type(self).__name__}: {self.factor_name}>"
 
 
-class BinarySelectionFactor(BaseFactor):
+# --- 二级：数据供给方式 -------------------------------------------------------
+# BaseFactor → DeclaredFactor(声明式取数) / StreamFactor(流式订阅)。
+# 三级：DeclaredFactor 下为内容(选股/非日内 kline/风控日频)；StreamFactor 下为流种类
+# (tick / 日内 kline)。四级：流种类下的角色叶子(择时 / 风控)。
+
+
+class DeclaredFactor(BaseFactor):
+    """二级：声明式取数因子（``get_query_lst`` → ``receive_data``），不做流订阅。"""
+
+    def stream_requirement(
+        self, codes: Optional[Sequence[str]] = None
+    ) -> Optional[Tuple[str, Optional[str], List[str]]]:
+        return None
+
+
+class StreamFactor(BaseFactor):
+    """二级：流式因子——声明自身需要的流（``stream_type``）与代码池。
+
+    择时器/风控器据此汇总需求表；``stream_type`` 为 ``"tick"``（无频率）或 ``"kline"``
+    （带 ``frequency``）。子类只需声明 ``stream_type``（及 kline 的 ``frequency``）。
+    """
+
+    stream_type: str = ""
+    tick_window: Optional[Tuple[str, str]] = None
+
+    def get_query_lst(
+        self, date: Any = None, codes: Optional[List[str]] = None
+    ) -> List[Any]:
+        """流式因子不做声明式取数（数据来自流）。"""
+        return []
+
+    def stream_requirement(
+        self, codes: Optional[Sequence[str]] = None
+    ) -> Optional[Tuple[str, Optional[str], List[str]]]:
+        """向择时器/风控器报需求：``(kind, frequency, codes)``；tick 无频率。"""
+        if not self.stream_type:
+            return None
+        frequency = (
+            normalize_frequency(type(self).frequency)
+            if self.stream_type == "kline"
+            else None
+        )
+        return (self.stream_type, frequency, list(codes or ()))
+
+    def in_window(self, tick_time: Optional[str]) -> bool:
+        if not self.tick_window:
+            return True
+        if not tick_time:
+            return False
+        start, end = self.tick_window
+        return start <= tick_time <= end
+
+
+class BinarySelectionFactor(DeclaredFactor):
     _fixed_factor_kind = "selection_binary"
     factor_kind = "selection_binary"
     output_schema = "binary_series"
 
 
-class FloatSelectionFactor(BaseFactor):
+class FloatSelectionFactor(DeclaredFactor):
     _fixed_factor_kind = "selection_float"
     factor_kind = "selection_float"
     output_schema = "float_series"
 
 
-class RiskEventFactor(BaseFactor):
+class RiskEventFactor(DeclaredFactor):
     _fixed_factor_kind = "risk_event"
     factor_kind = "risk_event"
     output_schema = "binary_series"
 
 
-class RiskFloatFactor(BaseFactor):
+class RiskFloatFactor(DeclaredFactor):
     _fixed_factor_kind = "risk_float"
     factor_kind = "risk_float"
     output_schema = "float_series"
 
 
-class StreamFactor(BaseFactor):
-    """实时 K 线与 tick 因子共用的数据需求与目标代码状态。"""
+class TickStreamFactor(StreamFactor):
+    """三级：择时·tick 流式因子（逐 tick 产出 SignalIntent）。"""
+
+    _fixed_factor_kind = "timing_tick"
+    factor_kind = "timing_tick"
+    output_schema = "signal_intent"
+    stream_type = "tick"
+
+    def on_tick(
+        self, tick: Dict[str, Any], intents: Sequence[SignalIntent] = ()
+    ) -> List[SignalIntent]:
+        return []
+
+
+class IntradayKlineFactor(StreamFactor):
+    """三级：择时·日内 kline 流式因子（``frequency`` < 1d）。"""
+
+    _fixed_factor_kind = "timing_kline"
+    factor_kind = "timing_kline"
+    output_schema = "signal_intent"
+    stream_type = "kline"
+    frequency = "30m"
+    emitted_actions: frozenset[str] = frozenset()
 
     def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(factor_name, params)
-        self._target_codes: Set[str] = set()
-        self._targets_configured = False
-        self._needed: Set[str] = set()
-        self._on_needs_change: Optional[Any] = None
+        if normalize_frequency(type(self).frequency).endswith("d"):
+            raise ValueError(
+                f"{type(self).__name__} requires an intraday frequency (<1d), "
+                f"got {type(self).frequency!r}"
+            )
 
-    def set_needs_callback(self, callback: Optional[Any]) -> None:
-        self._on_needs_change = callback
-
-    def set_needed(self, codes: Optional[Sequence[str]]) -> None:
-        self._needed = set(codes or ())
-        self._target_codes = set(self._needed)
-        self._targets_configured = bool(self._needed)
-        self._notify_needs_change()
-
-    def drop_required_codes(self, code: str) -> None:
-        if code not in self._needed:
-            return
-        self._needed.discard(code)
-        self._target_codes.discard(code)
-        if not self._target_codes:
-            self._targets_configured = False
-        self._notify_needs_change()
-
-    def _notify_needs_change(self) -> None:
-        if self._on_needs_change is not None:
-            self._on_needs_change(self)
-
-    def required_codes(
-        self,
-        pool: Optional[List[str]] = None,
-        positions: Optional[Dict[str, Any]] = None,
-        account_info: Optional[Dict[str, Any]] = None,
-        **extra: Any,
-    ) -> List[str]:
-        """数据需求声明钩子：返回本因子需要获取 tick/K 线数据的代码集合。
-
-        基类默认返回 ``set_needed`` 声明的代码（未声明则返回 []）；子类可覆写。
-        因子可通过 ``drop_required_codes`` 在日内缩减自身需求，择时器据此重聚合。
-        """
-        return list(self._needed)
-
-    def is_target_code(self, code: str) -> bool:
-        return not self._targets_configured or code in self._target_codes
-
-    def _set_target_codes(self, codes: Optional[List[str]]) -> None:
-        self._target_codes = set(codes or ())
-        self._targets_configured = bool(codes)
-
-    def _snapshot_request_state(self) -> tuple[Any, ...]:
-        return super()._snapshot_request_state() + (
-            set(self._target_codes),
-            self._targets_configured,
-        )
-
-    def _restore_request_state(self, state: tuple[Any, ...]) -> None:
-        super()._restore_request_state(state[:-2])
-        self._target_codes = set(state[-2])
-        self._targets_configured = state[-1]
+    def on_bar(self, bar: KlineBar) -> List[SignalIntent]:
+        return []
 
 
-class KlineTimingFactor(StreamFactor):
+class NonIntradayKlineFactor(DeclaredFactor):
+    """三级：择时·非日内 kline 因子（声明式取历史，``frequency`` 以 d 结尾）。"""
+
     _fixed_factor_kind = "timing_kline"
     factor_kind = "timing_kline"
     output_schema = "signal_intent"
@@ -427,7 +513,13 @@ class KlineTimingFactor(StreamFactor):
 
     def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(factor_name, params)
-        normalize_frequency(type(self).frequency)
+        frequency = normalize_frequency(type(self).frequency)
+        if not frequency.endswith("d"):
+            raise ValueError(
+                f"{type(self).__name__} requires a daily frequency (>=1d), "
+                f"got {type(self).frequency!r}"
+            )
+        int(frequency[:-1])
 
     @property
     def history_lookback_days(self) -> int:
@@ -445,28 +537,9 @@ class KlineTimingFactor(StreamFactor):
         return []
 
 
-class TickTimingFactor(StreamFactor):
-    _fixed_factor_kind = "timing_tick"
-    factor_kind = "timing_tick"
-    output_schema = "signal_intent"
-    tick_window: Optional[Tuple[str, str]] = None
-    execution_role = "market_tick"
+class RiskNonIntradayKlineFactor(DeclaredFactor):
+    """三级：风控·非日内 kline 因子（声明式取历史，``frequency`` 以 d 结尾）。"""
 
-    def in_window(self, tick_time: Optional[str]) -> bool:
-        if not self.tick_window:
-            return True
-        if not tick_time:
-            return False
-        start, end = self.tick_window
-        return start <= tick_time <= end
-
-    def on_tick(
-        self, tick: Dict[str, Any], intents: Sequence[SignalIntent] = ()
-    ) -> List[SignalIntent]:
-        return []
-
-
-class RiskKlineFactor(StreamFactor):
     _fixed_factor_kind = "risk_kline"
     factor_kind = "risk_kline"
     output_schema = "risk_signal"
@@ -474,27 +547,48 @@ class RiskKlineFactor(StreamFactor):
 
     def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(factor_name, params)
-        normalize_frequency(type(self).frequency)
+        frequency = normalize_frequency(type(self).frequency)
+        if not frequency.endswith("d"):
+            raise ValueError(
+                f"{type(self).__name__} requires a daily frequency (>=1d), "
+                f"got {type(self).frequency!r}"
+            )
+        int(frequency[:-1])
 
     def on_bar(self, bar: KlineBar) -> List[RiskSignal]:
         return []
 
 
 class RiskTickFactor(StreamFactor):
+    """三级：风控·tick 流式因子。"""
+
     _fixed_factor_kind = "risk_tick"
     factor_kind = "risk_tick"
     output_schema = "risk_signal"
-    tick_window: Optional[Tuple[str, str]] = None
-
-    def in_window(self, tick_time: Optional[str]) -> bool:
-        if not self.tick_window:
-            return True
-        if not tick_time:
-            return False
-        start, end = self.tick_window
-        return start <= tick_time <= end
+    stream_type = "tick"
 
     def on_tick(self, tick: Dict[str, Any]) -> List[RiskSignal]:
+        return []
+
+
+class RiskIntradayKlineFactor(StreamFactor):
+    """三级：风控·日内 kline 流式因子（``frequency`` < 1d）。"""
+
+    _fixed_factor_kind = "risk_kline"
+    factor_kind = "risk_kline"
+    output_schema = "risk_signal"
+    stream_type = "kline"
+    frequency = "30m"
+
+    def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(factor_name, params)
+        if normalize_frequency(type(self).frequency).endswith("d"):
+            raise ValueError(
+                f"{type(self).__name__} requires an intraday frequency (<1d), "
+                f"got {type(self).frequency!r}"
+            )
+
+    def on_bar(self, bar: KlineBar) -> List[RiskSignal]:
         return []
 
 
@@ -561,15 +655,18 @@ def validate_risk_output(
 
 __all__ = [
     "BaseFactor",
+    "DeclaredFactor",
+    "StreamFactor",
     "BinarySelectionFactor",
     "FloatSelectionFactor",
-    "StreamFactor",
-    "KlineTimingFactor",
-    "TickTimingFactor",
+    "TickStreamFactor",
+    "IntradayKlineFactor",
+    "NonIntradayKlineFactor",
     "RiskEventFactor",
     "RiskFloatFactor",
-    "RiskKlineFactor",
     "RiskTickFactor",
+    "RiskIntradayKlineFactor",
+    "RiskNonIntradayKlineFactor",
     "validate_risk_output",
     "validate_selection_output",
     "winsorize_and_zscore",

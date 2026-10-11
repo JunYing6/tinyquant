@@ -13,7 +13,7 @@ from tinyquant_cli.runtime import SessionState
 from tools.data import InMemoryGateway, Session, TradingPhase
 from trading_nodes_base.methods import BaseTimeSelection
 from trading_nodes_base.strategies import BaseStrategy
-from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
+from trading_nodes_base.factors import NonIntradayKlineFactor
 
 
 def test_doctor_reports_core_runtime_status() -> None:
@@ -53,20 +53,9 @@ def _cli_session(day: str) -> Session:
     return Session(market="CN", trading_date=_cli_instant(day).date(), timezone="UTC", phases=(phase,))
 
 
-class _EmptyKline(KlineTimingFactor):
+class _EmptyKline(NonIntradayKlineFactor):
     def __init__(self) -> None:
         super().__init__("cli-kline")
-
-    def get_query_lst(self, date: Any, codes: list[str] | None = None) -> list:
-        self._data_clear()
-        return []
-
-
-class _EmptyTick(TickTimingFactor):
-    execution_role = "intent_executor"
-
-    def __init__(self) -> None:
-        super().__init__("cli-tick")
 
     def get_query_lst(self, date: Any, codes: list[str] | None = None) -> list:
         self._data_clear()
@@ -80,7 +69,7 @@ class _CliFastStrategy(BaseStrategy):
 def _build_cli_factory():
     strategy = _CliFastStrategy(
         "cli-fixture",
-        timer=BaseTimeSelection("cli-timer", [_EmptyKline()], [_EmptyTick()]),
+        timer=BaseTimeSelection("cli-timer", [_EmptyKline()], []),
     )
     sessions = [_cli_session("20240102"), _cli_session("20240103")]
     return strategy, InMemoryGateway(bars=[], sessions=sessions)

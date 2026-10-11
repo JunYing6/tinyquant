@@ -374,14 +374,14 @@ class FastBacktestEngine:
         return set(pools)
 
     def _needs_intraday(self) -> bool:
-        """是否需要日内重放（喂 tick 给撮合器/风控）。
+        """是否需要日内 tick 重放（喂 tick 给撮合器/风控）。
 
-        择时器含 tick 因子，**或风控器含 tick 因子**（日线择时 + 盘中风控）时为真。
+        择时器含 tick 流式因子，**或风控器含 tick 因子**（日线择时 + 盘中风控）时为真。
+        日内 kline 因子走 kline 流，不在此列。
         """
         for strategy in self._strategies:
-            for factor in strategy.timer.tick_factors:
-                if getattr(factor, "execution_role", "") != "intent_executor":
-                    return True
+            if strategy.timer.tick_factors:
+                return True
             if strategy.risk_ctrl is not None and getattr(strategy.risk_ctrl, "risk_tick_factors", None):
                 return True
         return False

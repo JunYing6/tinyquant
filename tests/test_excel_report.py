@@ -21,7 +21,7 @@ from trading_nodes_base.methods import BaseTimeSelection
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest
-from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
+from trading_nodes_base.factors import NonIntradayKlineFactor
 
 
 def _instant(day: str, clock: str = "15:00:00") -> datetime:
@@ -43,7 +43,7 @@ def _gateway(bars: list[Bar]) -> InMemoryGateway:
     return InMemoryGateway(bars=bars, events=[], sessions=[_session(day) for day in days])
 
 
-class PassiveQueryFactor(KlineTimingFactor):
+class PassiveQueryFactor(NonIntradayKlineFactor):
     def __init__(self) -> None:
         super().__init__("passive-query")
 
@@ -55,23 +55,11 @@ class PassiveQueryFactor(KlineTimingFactor):
         return []
 
 
-class PassiveIntentExecutor(TickTimingFactor):
-    execution_role = "intent_executor"
-    accepted_intent_actions = frozenset({"BUY"})
-
-    def __init__(self) -> None:
-        super().__init__("passive-executor")
-
-    def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
-        self._data_clear()
-        return []
-
-
 class BuyingFastStrategy(BaseStrategy):
     supports_fast_backtest = True
 
     def __init__(self) -> None:
-        timer = BaseTimeSelection("buy-timer", [PassiveQueryFactor()], [PassiveIntentExecutor()])
+        timer = BaseTimeSelection("buy-timer", [PassiveQueryFactor()], [])
         super().__init__("buy-fast", timer=timer)
         self._queued_once = False
 

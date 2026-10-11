@@ -8,12 +8,12 @@ import pytest
 
 from tinyquant_cli.loading import FactoryContractError, load_backtest_factory
 from tools.data import InMemoryGateway
-from trading_nodes_base.factors import KlineTimingFactor, TickTimingFactor
+from trading_nodes_base.factors import NonIntradayKlineFactor, TickStreamFactor
 from trading_nodes_base.methods import BaseTimeSelection
 from trading_nodes_base.strategies import BaseStrategy
 
 
-class _EmptyKline(KlineTimingFactor):
+class _EmptyKline(NonIntradayKlineFactor):
     def __init__(self) -> None:
         super().__init__("loader-kline")
 
@@ -22,9 +22,7 @@ class _EmptyKline(KlineTimingFactor):
         return []
 
 
-class _EmptyTick(TickTimingFactor):
-    execution_role = "intent_executor"
-
+class _EmptyTick(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("loader-tick")
 

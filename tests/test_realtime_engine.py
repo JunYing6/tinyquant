@@ -23,7 +23,7 @@ from tools.data import (
     TradingPhase,
     UnsupportedDatasetError,
 )
-from trading_nodes_base.factors import KlineTimingFactor, RiskKlineFactor, TickTimingFactor
+from trading_nodes_base.factors import IntradayKlineFactor, RiskIntradayKlineFactor, TickStreamFactor
 from trading_nodes_base.types import ExecutionMode, ExecutionRequest, KlineBar, RiskSignal, SignalIntent
 from trading_nodes_base.methods import BaseRiskControl, BaseStockPicking, BaseTimeSelection
 from trading_nodes_base.minds import BaseMind
@@ -136,7 +136,7 @@ class DemoFixedPicking(BaseStockPicking):
         return pd.DataFrame({"asset": self.stock_pool, "weight": [weight] * len(self.stock_pool)})
 
 
-class DirectLiveBuyFactor(TickTimingFactor):
+class DirectLiveBuyFactor(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("live-buy")
         self.fired = False
@@ -171,7 +171,7 @@ class LiveStrategy(BaseStrategy):
         )
 
 
-class QueryingTickFactor(TickTimingFactor):
+class QueryingTickFactor(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("querying-tick")
 
@@ -491,7 +491,7 @@ def test_realtime_engine_rolls_day_with_settle_and_rebuilt_session() -> None:
     assert trader.orders == [("BUY", "000001.SZ", 100, 10.0)]
 
 
-class DropRatio30mRisk(RiskKlineFactor):
+class DropRatio30mRisk(RiskIntradayKlineFactor):
     frequency = "30m"
 
     def __init__(self) -> None:
@@ -506,7 +506,7 @@ class DropRatio30mRisk(RiskKlineFactor):
         return [RiskSignal(triggered=True, risk_kind="float", value=0.0)]
 
 
-class Counting30mTiming(KlineTimingFactor):
+class Counting30mTiming(IntradayKlineFactor):
     frequency = "30m"
 
     def __init__(self) -> None:

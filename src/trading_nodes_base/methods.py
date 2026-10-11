@@ -16,14 +16,22 @@ from trading_nodes_base.factors import (
     BaseFactor,
     BinarySelectionFactor,
     FloatSelectionFactor,
-    KlineTimingFactor,
-    RiskKlineFactor,
+    IntradayKlineFactor,
+    NonIntradayKlineFactor,
+    RiskIntradayKlineFactor,
+    RiskNonIntradayKlineFactor,
     RiskTickFactor,
-    TickTimingFactor,
+    StreamFactor,
+    TickStreamFactor,
     validate_selection_output,
     winsorize_and_zscore,
 )
 from trading_nodes_base.types import KlineBar, RiskSignal, SignalIntent, ExecutionRequest, ExecutionMode, normalize_frequency
+
+
+# 择时 kline 因子：日内流式 + 非日内声明式；风控 kline 因子：日内流式 + 非日内声明式。
+_KLINE_TIMING_FACTORS = (IntradayKlineFactor, NonIntradayKlineFactor)
+_KLINE_RISK_FACTORS = (RiskIntradayKlineFactor, RiskNonIntradayKlineFactor)
 
 
 @dataclass(frozen=True)
@@ -545,8 +553,8 @@ class BaseTimeSelection(BaseComponent):
     def __init__(
         self,
         name: str,
-        kline_factors: Optional[List[KlineTimingFactor]] = None,
-        tick_factors: Optional[List[TickTimingFactor]] = None,
+        kline_factors: Optional[List[BaseFactor]] = None,
+        tick_factors: Optional[List[TickStreamFactor]] = None,
     ) -> None:
         super().__init__(name)
         self.kline_factors = list(kline_factors or [])
@@ -565,10 +573,12 @@ class BaseTimeSelection(BaseComponent):
         self._emitted_today: set[tuple[str, str]] = set()
 
     def _validate_governed_factors(self) -> None:
-        if not all(isinstance(f, KlineTimingFactor) for f in self.kline_factors):
-            raise TypeError("kline_factors must contain KlineTimingFactor instances")
-        if not all(isinstance(f, TickTimingFactor) for f in self.tick_factors):
-            raise TypeError("tick_factors must contain TickTimingFactor instances")
+        if not all(isinstance(f, _KLINE_TIMING_FACTORS) for f in self.kline_factors):
+            raise TypeError(
+                "kline_factors must contain IntradayKlineFactor/NonIntradayKlineFactor instances"
+            )
+        if not all(isinstance(f, TickStreamFactor) for f in self.tick_factors):
+            raise TypeError("tick_factors must contain TickStreamFactor instances")
         emitted = set().union(*(f.emitted_actions for f in self.kline_factors)) if self.kline_factors else set()
         self.emitted_actions = frozenset(emitted)
         self.accepted_intent_actions = frozenset()
@@ -583,7 +593,7 @@ class BaseTimeSelection(BaseComponent):
 
     @property
     def fast_blockers(self) -> List[str]:
-        return [f.factor_name for f in self.tick_factors if f.execution_role != "intent_executor"]
+        return [f.factor_name for f in self.tick_factors]
 
     @property
     def fast_eligible(self) -> bool:
@@ -812,7 +822,7 @@ class BaseRiskControl(BaseComponent):
         name: str,
         daily_factors: Optional[List[BaseFactor]] = None,
         tick_factors: Optional[List[BaseFactor]] = None,
-        risk_kline_factors: Optional[List[RiskKlineFactor]] = None,
+        risk_kline_factors: Optional[List[RiskIntradayKlineFactor]] = None,
         risk_tick_factors: Optional[List[RiskTickFactor]] = None,
         risk_event_factors: Optional[List[BaseFactor]] = None,
         risk_float_factors: Optional[List[BaseFactor]] = None,
@@ -826,8 +836,8 @@ class BaseRiskControl(BaseComponent):
         self.risk_tick_factors = list(risk_tick_factors or [])
         self.risk_event_factors = list(risk_event_factors or [])
         self.risk_float_factors = list(risk_float_factors or [])
-        if not all(isinstance(f, RiskKlineFactor) for f in self.risk_kline_factors):
-            raise TypeError("risk_kline_factors must contain RiskKlineFactor instances")
+        if not all(isinstance(f, _KLINE_RISK_FACTORS) for f in self.risk_kline_factors):
+            raise TypeError("risk_kline_factors must contain RiskIntradayKlineFactor instances")
         if not all(isinstance(f, RiskTickFactor) for f in self.risk_tick_factors):
             raise TypeError("risk_tick_factors must contain RiskTickFactor instances")
         self.all_factors = [*self.daily_factors, *self.tick_factors, *self.risk_event_factors, *self.risk_float_factors, *self.risk_kline_factors, *self.risk_tick_factors]
