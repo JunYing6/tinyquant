@@ -63,9 +63,9 @@ def test_timer_stream_demands_partitions_by_kind_and_frequency():
     timer = BaseTimeSelection("t", [], [_Decl(["A", "B"]), _Noop()])
     timer.on_daily(pool=["A", "B", "C"], positions={}, account_info=None)
 
-    demands = timer.stream_demands(["A", "B", "C"])
-    # _Decl 声明了 A/B（scoped）；_Noop 未声明 -> 视为需要全部 base
-    assert demands["tick"] == {"A", "B", "C"}
+    demands = timer.stream_demands()
+    # 只有声明了目标代码的因子计入；_Noop 未声明 -> 空，不订阅
+    assert demands["tick"] == {"A", "B"}
     assert demands["kline"] == {}
     assert demands["factors"]["decl"] == ("tick", None, ["A", "B"])
 
@@ -82,7 +82,7 @@ def test_timer_stream_demands_kline_frequency_and_declared_not_counted():
     timer = BaseTimeSelection("t", [_Scoped30mTiming()], [_Decl(["A"])])
     timer.on_daily(pool=["A", "B"], positions={}, account_info=None)
 
-    demands = timer.stream_demands(["A", "B"])
+    demands = timer.stream_demands()
     assert demands["kline"] == {"30m": {"A"}}
     assert demands["factors"]["scoped-30m"] == ("kline", "30m", ["A"])
 
@@ -98,6 +98,12 @@ class _ScopedRisk30m(RiskIntradayKlineFactor):
 
     def __init__(self):
         super().__init__("scoped-risk-30m")
+        self.set_needed(["X"])
+
+
+class _UndeclaredRiskTick(RiskTickFactor):
+    def __init__(self):
+        super().__init__("undeclared-risk-tick")
 
 
 class _DailyRiskKline(RiskNonIntradayKlineFactor):
@@ -108,15 +114,15 @@ class _DailyRiskKline(RiskNonIntradayKlineFactor):
         return []
 
 
-def test_risk_stream_demands_scopes_and_skips_declared():
+def test_risk_stream_demands_scopes_and_skips_undeclared():
     risk = BaseRiskControl(
         "risk",
-        risk_tick_factors=[_ScopedRiskTick()],
+        risk_tick_factors=[_ScopedRiskTick(), _UndeclaredRiskTick()],
         risk_kline_factors=[_ScopedRisk30m(), _DailyRiskKline()],
     )
     risk.on_pre_market()  # _scope_stream_factors 会给流因子设目标代码
 
-    demands = risk.stream_demands(["X", "Y"])
+    demands = risk.stream_demands()
     assert demands["tick"] == {"X"}
-    # 30m 流式因子未声明目标 -> 需要全 base；非日内声明式因子不计入
-    assert demands["kline"] == {"30m": {"X", "Y"}}
+    # 30m 流式因子声明了 X；非日内声明式因子（daily-risk-kline）不计入
+    assert demands["kline"] == {"30m": {"X"}}

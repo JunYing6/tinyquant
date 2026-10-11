@@ -69,6 +69,7 @@ class DirectBuyTickFactor(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("direct-buy")
         self.fired = False
+        self.set_needed(["000001.SZ"])
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
@@ -89,6 +90,7 @@ class TickStrategy(BaseStrategy):
 class SequenceRecordingFactor(TickStreamFactor):
     def __init__(self) -> None:
         super().__init__("sequence-recording")
+        self.set_needed(["000001.SZ"])
         self.prices: list[float] = []
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:

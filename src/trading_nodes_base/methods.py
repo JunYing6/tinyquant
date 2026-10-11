@@ -664,20 +664,21 @@ class BaseTimeSelection(BaseComponent):
         if getattr(self, "_on_pool_change", None) is not None:
             self._on_pool_change(self.data_required_pool)
 
-    def stream_demands(self, base: Sequence[str]) -> Dict[str, Any]:
+    def stream_demands(self) -> Dict[str, Any]:
         """按因子声明构建流需求表（订阅/分发同源）。
 
         返回 ``{"kline": {frequency: set[codes]}, "tick": set[codes],
         "factors": {factor_name: (kind, frequency, codes)}}``。
-        因子未声明目标代码（``_targets_configured`` 为假）时视为需要全部 ``base``；
-        声明式（非流式）因子返回 ``None`` 不计入。
+        因子声明了目标代码（``_targets_configured`` 为真）才算它需要那些流；
+        未声明一律视为空（不下发/不订阅）。声明式（非流式）因子返回 ``None`` 不计入。
         """
-        base_set = set(base)
         kline: Dict[str, Set[str]] = {}
         tick: Set[str] = set()
         factors: Dict[str, tuple] = {}
         for factor in self.all_factors:
-            codes = set(factor._target_codes) if factor._targets_configured else set(base_set)
+            if not factor._targets_configured:
+                continue
+            codes = set(factor._target_codes)
             requirement = factor.stream_requirement()
             if requirement is None:
                 continue
@@ -911,14 +912,18 @@ class BaseRiskControl(BaseComponent):
     def set_pool_change_callback(self, callback: Optional[Any]) -> None:
         self._on_pool_change = callback
 
-    def stream_demands(self, base: Sequence[str]) -> Dict[str, Any]:
-        """按流式风控因子声明构建需求表（与 :meth:`BaseTimeSelection.stream_demands` 同构）。"""
-        base_set = set(base)
+    def stream_demands(self) -> Dict[str, Any]:
+        """按流式风控因子声明构建需求表（与 :meth:`BaseTimeSelection.stream_demands` 同构）。
+
+        未声明目标代码（``_targets_configured`` 为假）一律视为空。
+        """
         kline: Dict[str, Set[str]] = {}
         tick: Set[str] = set()
         factors: Dict[str, tuple] = {}
         for factor in self.risk_kline_factors + self.risk_tick_factors:
-            codes = set(factor._target_codes) if factor._targets_configured else set(base_set)
+            if not factor._targets_configured:
+                continue
+            codes = set(factor._target_codes)
             requirement = factor.stream_requirement()
             if requirement is None:
                 continue

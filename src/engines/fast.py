@@ -328,7 +328,7 @@ class FastBacktestEngine:
             historic = self._probe_intraday_history(session, desired, codes)
             for frequency in historic:
                 self._adapter.mark_external_frequency(frequency)
-            self._sync_stream_subscriptions(state["base"])
+            self._sync_stream_subscriptions()
             state["historic_freqs"] = historic
             state["aggregate_freqs"] = desired - historic
             state["ticked"] = self._needs_intraday() or bool(state["aggregate_freqs"])
@@ -404,23 +404,23 @@ class FastBacktestEngine:
                     freqs.add(frequency)
         return freqs
 
-    def _sync_stream_subscriptions(self, base: set[str]) -> None:
+    def _sync_stream_subscriptions(self) -> None:
         """由择时器/风控器的需求表（``stream_demands``）重建流订阅。
 
-        只订阅需求表里出现的内容（tick / kline:<freq>）；声明式（非日内/非流式）
-        因子不计入。撮合器订单的订阅由撮合器自行维护，不受影响。
+        只订阅需求表里出现的内容（tick / kline:<freq>）；未声明目标代码或声明式
+        （非日内/非流式）的因子不计入。撮合器订单的订阅由撮合器自行维护，不受影响。
         """
         tick_codes: set[str] = set()
         kline: dict[str, set[str]] = {}
         for strategy in self._strategies:
-            demands = strategy.timer.stream_demands(base)
+            demands = strategy.timer.stream_demands()
             tick_codes.update(demands["tick"])
             for frequency, codes in demands["kline"].items():
                 kline.setdefault(frequency, set()).update(codes)
             risk = strategy.risk_ctrl
             if risk is None:
                 continue
-            demands = risk.stream_demands(base)
+            demands = risk.stream_demands()
             tick_codes.update(demands["tick"])
             for frequency, codes in demands["kline"].items():
                 kline.setdefault(frequency, set()).update(codes)
@@ -540,13 +540,13 @@ class FastBacktestEngine:
         """因子日内增减声明代码后置脏标记；下一个流步惰性重建订阅集。"""
         self._pool_dirty = True
 
-    def _current_subscriptions(self, aggregate_freqs: set[str], base: set[str]) -> set[str]:
+    def _current_subscriptions(self, aggregate_freqs: set[str]) -> set[str]:
         """当前需要 tick 的 code：tick 订阅 ∪ 需聚合的 kline 频率订阅。
 
-        因子声明变化时惰性重建订阅集。**不**与 base 求交——越界码（池外）也要单开流。
+        因子声明变化时惰性重建订阅集。
         """
         if self._pool_dirty:
-            self._sync_stream_subscriptions(base)
+            self._sync_stream_subscriptions()
             self._pool_dirty = False
         codes = set(self._registry.codes(KIND_TICK))
         for frequency in aggregate_freqs:
@@ -731,7 +731,7 @@ class FastBacktestEngine:
 
         # --- 订阅对账 ---
         def tick_subs() -> set[str]:
-            return self._current_subscriptions(aggregate, base)
+            return self._current_subscriptions(aggregate)
 
         def kline_subs(frequency: str) -> set[str]:
             return set(self._registry.codes(kline_kind(frequency)))
