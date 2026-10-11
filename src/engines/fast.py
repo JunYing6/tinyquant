@@ -257,6 +257,8 @@ class FastBacktestEngine:
         self._stream_base: set[str] = set()
         for strategy in self._strategies:
             strategy.timer.set_pool_change_callback(self._mark_pool_dirty)
+            if strategy.risk_ctrl is not None:
+                strategy.risk_ctrl.set_pool_change_callback(self._mark_pool_dirty)
         self.equity_curve: list[dict[str, Any]] = []
         self.daily_positions: list[dict[str, Any]] = []
         self.member_curve: list[dict[str, Any]] = []
@@ -403,39 +405,29 @@ class FastBacktestEngine:
         return freqs
 
     def _sync_stream_subscriptions(self, base: set[str]) -> None:
-        """由择时器/风控器声明的数据需求（``data_required_pool``）重建流订阅。
+        """由择时器/风控器的需求表（``stream_demands``）重建流订阅。
 
-        按因子类型拆成 tick / kline:<freq> 两类；因子未声明目标（``_targets_configured``
-        为假）时视为需要全部 ``base``。撮合器订单的订阅由撮合器自行维护，不受影响。
+        只订阅需求表里出现的内容（tick / kline:<freq>）；声明式（非日内/非流式）
+        因子不计入。撮合器订单的订阅由撮合器自行维护，不受影响。
         """
         tick_codes: set[str] = set()
         kline: dict[str, set[str]] = {}
         for strategy in self._strategies:
-            for factor in strategy.timer.kline_factors:
-                frequency = normalize_frequency(type(factor).frequency)
-                if not frequency.endswith("d"):
-                    kline.setdefault(frequency, set()).update(self._factor_subscription_codes(factor, base))
-            for factor in strategy.timer.tick_factors:
-                tick_codes.update(self._factor_subscription_codes(factor, base))
+            demands = strategy.timer.stream_demands(base)
+            tick_codes.update(demands["tick"])
+            for frequency, codes in demands["kline"].items():
+                kline.setdefault(frequency, set()).update(codes)
             risk = strategy.risk_ctrl
             if risk is None:
                 continue
-            for factor in getattr(risk, "risk_kline_factors", []):
-                frequency = normalize_frequency(getattr(type(factor), "frequency", "1d"))
-                if not frequency.endswith("d"):
-                    kline.setdefault(frequency, set()).update(self._factor_subscription_codes(factor, base))
-            for factor in getattr(risk, "risk_tick_factors", []):
-                tick_codes.update(self._factor_subscription_codes(factor, base))
+            demands = risk.stream_demands(base)
+            tick_codes.update(demands["tick"])
+            for frequency, codes in demands["kline"].items():
+                kline.setdefault(frequency, set()).update(codes)
         self._registry.drop_source("factor")
         self._registry.subscribe("factor", KIND_TICK, tick_codes)
         for frequency, codes in kline.items():
             self._registry.subscribe("factor", kline_kind(frequency), codes)
-
-    @staticmethod
-    def _factor_subscription_codes(factor: Any, base: set[str]) -> set[str]:
-        if getattr(factor, "_targets_configured", False):
-            return set(getattr(factor, "_target_codes", set()))
-        return set(base)
 
     def _emit_kline(self, frequency: str, bar: KlineBar) -> None:
         """（保留：外部直接投喂单根 kline 时按订阅过滤。）"""

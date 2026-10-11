@@ -571,6 +571,8 @@ class BaseTimeSelection(BaseComponent):
         self.account_info: Optional[Dict[str, Any]] = None
         self.default_buy_sizing: float = 1.0
         self._emitted_today: set[tuple[str, str]] = set()
+        self.data_required_pool: List[str] = []
+        self._on_pool_change: Optional[Any] = None
 
     def _validate_governed_factors(self) -> None:
         if not all(isinstance(f, _KLINE_TIMING_FACTORS) for f in self.kline_factors):
@@ -661,6 +663,31 @@ class BaseTimeSelection(BaseComponent):
         self.data_required_pool = sorted(required)
         if getattr(self, "_on_pool_change", None) is not None:
             self._on_pool_change(self.data_required_pool)
+
+    def stream_demands(self, base: Sequence[str]) -> Dict[str, Any]:
+        """按因子声明构建流需求表（订阅/分发同源）。
+
+        返回 ``{"kline": {frequency: set[codes]}, "tick": set[codes],
+        "factors": {factor_name: (kind, frequency, codes)}}``。
+        因子未声明目标代码（``_targets_configured`` 为假）时视为需要全部 ``base``；
+        声明式（非流式）因子返回 ``None`` 不计入。
+        """
+        base_set = set(base)
+        kline: Dict[str, Set[str]] = {}
+        tick: Set[str] = set()
+        factors: Dict[str, tuple] = {}
+        for factor in self.all_factors:
+            codes = set(factor._target_codes) if factor._targets_configured else set(base_set)
+            requirement = factor.stream_requirement()
+            if requirement is None:
+                continue
+            kind, frequency, _ = requirement
+            if kind == "tick":
+                tick |= codes
+            else:
+                kline.setdefault(frequency, set()).update(codes)
+            factors[factor.factor_name] = (kind, frequency, sorted(codes))
+        return {"kline": kline, "tick": tick, "factors": factors}
 
     def kline_bar_input(self, bar: KlineBar) -> List[SignalIntent]:
         if not isinstance(bar, KlineBar):
@@ -837,7 +864,7 @@ class BaseRiskControl(BaseComponent):
         self.risk_event_factors = list(risk_event_factors or [])
         self.risk_float_factors = list(risk_float_factors or [])
         if not all(isinstance(f, _KLINE_RISK_FACTORS) for f in self.risk_kline_factors):
-            raise TypeError("risk_kline_factors must contain RiskIntradayKlineFactor instances")
+            raise TypeError("risk_kline_factors must contain RiskIntradayKlineFactor/RiskNonIntradayKlineFactor instances")
         if not all(isinstance(f, RiskTickFactor) for f in self.risk_tick_factors):
             raise TypeError("risk_tick_factors must contain RiskTickFactor instances")
         self.all_factors = [*self.daily_factors, *self.tick_factors, *self.risk_event_factors, *self.risk_float_factors, *self.risk_kline_factors, *self.risk_tick_factors]
@@ -845,6 +872,8 @@ class BaseRiskControl(BaseComponent):
         self.is_trading_allowed = True
         self.risk_decision = RiskDecision()
         self.daily_factor_data: Dict[str, Any] = {}
+        self.data_required_pool: List[str] = []
+        self._on_pool_change: Optional[Any] = None
 
     def _calculate_daily_factors(self) -> None:
         for factor in self.daily_factors + self.risk_event_factors + self.risk_float_factors:
@@ -852,12 +881,54 @@ class BaseRiskControl(BaseComponent):
 
     def on_pre_market(self) -> RiskDecision:
         self._calculate_daily_factors()
+        self._scope_stream_factors()
         emergency = self._normalize_layer_result(self.evaluate_emergency(self.daily_factor_data))
         if emergency.triggered:
             return self._apply_layer_result(replace(emergency, force_liquidate=True, target_position_ratio=0.0, trading_allowed=False))
         base = self._normalize_layer_result(self.evaluate_base(self.daily_factor_data))
         dynamic = self.evaluate_dynamic(self.daily_factor_data, base) if len(inspect.signature(self.evaluate_dynamic).parameters) >= 2 else self.evaluate_dynamic(self.daily_factor_data)
         return self._apply_layer_result(self._normalize_layer_result(dynamic))
+
+    def _scope_stream_factors(self) -> None:
+        """给流式风控因子（kline/tick）设目标代码，聚合订阅池（与择时器同构）。"""
+        required: Set[str] = set()
+        for factor in self.risk_kline_factors + self.risk_tick_factors:
+            factor.set_needs_callback(self._on_needs_change)
+            codes = factor.required_codes()
+            factor._set_target_codes(codes)
+            required.update(codes)
+        self.data_required_pool = sorted(required)
+
+    def _on_needs_change(self, _factor: Any) -> None:
+        """风控流式因子日内缩减所需代码（drop_required_codes）后重聚合并通知引擎。"""
+        required: Set[str] = set()
+        for factor in self.risk_kline_factors + self.risk_tick_factors:
+            required.update(factor.required_codes())
+        self.data_required_pool = sorted(required)
+        if getattr(self, "_on_pool_change", None) is not None:
+            self._on_pool_change(self.data_required_pool)
+
+    def set_pool_change_callback(self, callback: Optional[Any]) -> None:
+        self._on_pool_change = callback
+
+    def stream_demands(self, base: Sequence[str]) -> Dict[str, Any]:
+        """按流式风控因子声明构建需求表（与 :meth:`BaseTimeSelection.stream_demands` 同构）。"""
+        base_set = set(base)
+        kline: Dict[str, Set[str]] = {}
+        tick: Set[str] = set()
+        factors: Dict[str, tuple] = {}
+        for factor in self.risk_kline_factors + self.risk_tick_factors:
+            codes = set(factor._target_codes) if factor._targets_configured else set(base_set)
+            requirement = factor.stream_requirement()
+            if requirement is None:
+                continue
+            kind, frequency, _ = requirement
+            if kind == "tick":
+                tick |= codes
+            else:
+                kline.setdefault(frequency, set()).update(codes)
+            factors[factor.factor_name] = (kind, frequency, sorted(codes))
+        return {"kline": kline, "tick": tick, "factors": factors}
 
     @staticmethod
     def _normalize_layer_result(result: Any) -> RiskLayerResult:
