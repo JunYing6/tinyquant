@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from trading_nodes_base.types import ExecutionRequest
+from trading_nodes_base.factors import KlineTimingFactor
+from trading_nodes_base.methods import BaseTimeSelection
+from trading_nodes_base.strategies import BaseStrategy
+from trading_nodes_base.types import ExecutionRequest, KlineBar, SignalIntent
 from engines.core.matching import MatchingEngine
 from engines.core.trading_adapter import TradingContractAdapter
 
@@ -54,3 +57,52 @@ def test_match_strategy_fills_market_order_on_tick():
     tick = type("T", (), {"instrument_id": "A", "price": 15.0, "ask_levels": None, "bid_levels": None})()
     adapter._match_strategy(strategy, tick)
     assert fills and fills[0][3] == 15.0 and fills[0][4] == 100
+
+
+class _Emit30m(KlineTimingFactor):
+    frequency = "30m"
+    emitted_actions = frozenset({"BUY"})
+
+    def __init__(self):
+        super().__init__("emit-30m")
+        self.emitted = False
+
+    def get_query_lst(self, date, codes=None):
+        return []
+
+    def on_bar(self, bar):
+        if self.emitted:
+            return []
+        self.emitted = True
+        return [SignalIntent(bar.code, "BUY", bar.end_time, "entry", {"volume": 100})]
+
+
+class _Recorder:
+    def __init__(self):
+        self.fills = []
+        self.positions = {}
+
+    def order(self, orders):
+        self.fills.extend(orders)
+        return orders
+
+
+def _kline30m(code, end, price):
+    return KlineBar(code=code, frequency="30m", end_time=end, open=price, high=price, low=price,
+                    close=price, volume=0.0, amount=0.0)
+
+
+def test_prebuilt_intraday_bar_matches_next_bar_order():
+    account = _Recorder()
+    strategy = BaseStrategy("s30m", timer=BaseTimeSelection("t30m", [_Emit30m()], []))
+    strategy.set_account(account)
+    strategy._current_date = "20240102"
+    strategy.tick_matcher = MatchingEngine(account.order, strategy.handle_order_event, default_timing="next_bar_open")
+
+    adapter = TradingContractAdapter(strategy)
+    adapter.mark_external_frequency("30m")
+
+    adapter.feed_prebuilt_bars("30m", [_kline30m("A", "10:00:00", 10.0)])  # 信号 bar：下单
+    assert account.fills == []
+    adapter.feed_prebuilt_bars("30m", [_kline30m("A", "10:30:00", 11.0)])  # 下一根：按 open 成交
+    assert account.fills and account.fills[0][3] == 11.0 and account.fills[0][4] == 100

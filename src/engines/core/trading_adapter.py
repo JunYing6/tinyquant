@@ -47,6 +47,11 @@ class TradingContractAdapter:
 
     def _bar_callback(self, strategy: BaseStrategy, frequency: str):
         def on_bar(bar: KlineBar) -> None:
+            # 日内 kline（含历史 prebuilt 与 tick 聚合）同样要经撮合器推进计数、
+            # 成交既有订单，语义与 tick/日线一致：先撮合，再喂信号。
+            # 日线 bar 已在 ``feed_daily_bar`` 撮合，此处不重复匹配。
+            if not frequency.endswith("d"):
+                self._match_strategy(strategy, bar)
             strategy.on_kline_bar(bar)
             if self.risk_bar_sink is not None and frequency in self._risk_intraday_frequencies(strategy):
                 self.risk_bar_sink(bar)
