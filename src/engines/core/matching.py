@@ -15,7 +15,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Callable, Mapping
 
-from trading_nodes_base.types import ExecutionMode, ExecutionRequest
+from trading_nodes_base.types import ExecutionMode, ExecutionRequest, normalize_frequency
 
 from engines.core.subscriptions import KIND_TICK, SubscriptionTracker, kline_kind
 
@@ -147,17 +147,24 @@ class MatchingEngine:
 
     @staticmethod
     def _order_stream_kind(timing: str, frequency: str | None) -> str:
+        """订单所需的流订阅 kind；日线 next_bar（无频率 / ``d`` 结尾）不经流，返回空串。"""
         if timing in ("next_bar_open", "next_bar_close"):
-            return kline_kind(frequency or "1d")
+            if frequency is None or normalize_frequency(frequency).endswith("d"):
+                return ""
+            return kline_kind(frequency)
         return KIND_TICK
 
     def _want(self, order: MatchingOrder) -> None:
+        if not order.stream_kind:
+            return
         key = (order.stream_kind, order.code)
         self._want_counts[key] = self._want_counts.get(key, 0) + 1
         if self._tracker is not None:
             self._tracker.want(order.stream_kind, [order.code])
 
     def _release(self, order: MatchingOrder) -> None:
+        if not order.stream_kind:
+            return
         key = (order.stream_kind, order.code)
         count = self._want_counts.get(key, 0) - 1
         if count > 0:

@@ -39,6 +39,7 @@ def _gateway(bars: list[Bar], events: list[Any] | None = None, days: list[str] |
 class PassiveKlineFactor(NonIntradayKlineFactor):
     def __init__(self) -> None:
         super().__init__("passive-kline")
+        self.set_needed(["000001.SZ"])
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()
@@ -113,6 +114,7 @@ class NextBarBuyFactor(NonIntradayKlineFactor):
 
     def __init__(self) -> None:
         super().__init__("next-bar-buy")
+        self.set_needed(["000001.SZ"])
         self.emitted = False
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
@@ -138,6 +140,7 @@ class SizingBarFactor(NonIntradayKlineFactor):
 
     def __init__(self) -> None:
         super().__init__("sizing-bar-buy")
+        self.set_needed(["000001.SZ"])
         self.emitted = False
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
@@ -268,6 +271,34 @@ def test_stream_backtest_replicates_day_end_market_orders_to_real_account() -> N
 
     assert engine.account.positions == {"000001.SZ": 100}  # 日终单复刻到真实账户
     assert stream.shadow_accounts["child"].positions == {"000001.SZ": 100}
+
+
+def test_fast_backtest_with_empty_pool_reads_no_market_bar() -> None:
+    # 无声明、无选股池：引擎不应读全市场日线（空 = 一个都不读）
+    class _NoPoolKline(NonIntradayKlineFactor):
+        def __init__(self) -> None:
+            super().__init__("no-pool-kline")
+
+        def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
+            self._data_clear()
+            return []
+
+        def on_bar(self, bar: KlineBar) -> list[SignalIntent]:
+            return []
+
+    class _NoPoolStrategy(BaseStrategy):
+        supports_fast_backtest = True
+
+        def __init__(self) -> None:
+            super().__init__("no-pool", timer=BaseTimeSelection("no-pool-timer", [_NoPoolKline()], []))
+
+    gateway = _RecordingGateway(bars=BARS, sessions=[_session("20240102")])
+    engine = FastBacktestEngine(_NoPoolStrategy(), "20240102", "20240102", mode="fast", data_gateway=gateway, progress_bar=False)
+
+    engine.run()
+
+    assert not [request for request in gateway.reads if request.dataset == "market.bar"]
+    assert engine.account.positions == {}
 
 
 def test_backtest_wraps_gateway_errors_with_dataset_and_date() -> None:

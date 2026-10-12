@@ -46,6 +46,7 @@ def _gateway(bars: list[Bar]) -> InMemoryGateway:
 class PassiveQueryFactor(NonIntradayKlineFactor):
     def __init__(self) -> None:
         super().__init__("passive-query")
+        self.set_needed(["000001.SZ"])
 
     def get_query_lst(self, date: object, codes: list[str] | None = None) -> list[DataRequest]:
         self._data_clear()

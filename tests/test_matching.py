@@ -129,6 +129,24 @@ def test_matcher_next_bar_subscribes_source_kline_frequency():
     assert registry.codes(KIND_TICK) == set()
 
 
+def test_matcher_next_bar_daily_order_does_not_subscribe_stream():
+    # 日线 next_bar（无频率 / 1d）不经流（日线由日线管道喂），不应产生任何订阅
+    registry = StreamRegistry()
+    matcher = MatchingEngine(Rec().order, None, tracker=SubscriptionTracker(registry, "matcher:x"))
+
+    matcher.submit_requests(
+        [ExecutionRequest(code="A", action="BUY", time="t", volume=100, timing="next_bar_open")],
+        "20260930",
+    )
+    matcher.submit_requests(
+        [ExecutionRequest(code="B", action="BUY", time="t", volume=100, timing="next_bar_close")],
+        "20260930",
+        "1d",
+    )
+    assert registry.kinds() == set()
+    assert registry.codes(KIND_TICK) == set()
+
+
 def test_matcher_releases_only_after_last_order_for_code_leaves():
     registry = StreamRegistry()
     matcher = MatchingEngine(Rec().order, None, tracker=SubscriptionTracker(registry, "matcher:x"))

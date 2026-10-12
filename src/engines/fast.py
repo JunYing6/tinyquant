@@ -298,14 +298,16 @@ class FastBacktestEngine:
             self._pipeline.run_daily(date_key)
             if isinstance(self.entity, BaseStream):
                 self.entity.on_daily({})
-            try:
-                codes = sorted(set(self._day_feed_codes()) | self._active_codes())
-                batch = self.data_gateway.read(DataRequest(dataset="market.bar", instruments=tuple(codes) if codes else None, start=session.open, end=session.close, fields=("open", "high", "low", "close", "volume", "turnover"), frequency="1d", price_basis="raw"))
-            except Exception as error:
-                raise DataProviderError(f"market.bar read failed on {date_key}: {error}") from error
-            if not batch.complete or batch.next_cursor is not None:
-                raise DataContractError(f"{batch.dataset} batch must be complete and fully consumed (request_id={batch.request_id})", dataset=batch.dataset, request_id=batch.request_id)
-            bars = [record for record in batch.records if isinstance(record, Bar)]
+            codes = sorted(set(self._day_feed_codes()) | self._active_codes())
+            bars: list[Bar] = []
+            if codes:
+                try:
+                    batch = self.data_gateway.read(DataRequest(dataset="market.bar", instruments=tuple(codes), start=session.open, end=session.close, fields=("open", "high", "low", "close", "volume", "turnover"), frequency="1d", price_basis="raw"))
+                except Exception as error:
+                    raise DataProviderError(f"market.bar read failed on {date_key}: {error}") from error
+                if not batch.complete or batch.next_cursor is not None:
+                    raise DataContractError(f"{batch.dataset} batch must be complete and fully consumed (request_id={batch.request_id})", dataset=batch.dataset, request_id=batch.request_id)
+                bars = [record for record in batch.records if isinstance(record, Bar)]
             state["bars"] = bars
             state["open"] = {bar.instrument_id: float(bar.open) for bar in bars if bar.instrument_id is not None}
             state["close"] = {bar.instrument_id: float(bar.close) for bar in bars if bar.instrument_id is not None}
@@ -495,9 +497,14 @@ class FastBacktestEngine:
                     pass
 
     def _probe_intraday_history(self, session: Any, freqs: set[str], codes: list[str]) -> set[str]:
-        """探测哪些日内频率当天有历史 bar（用少量代码轻量试读，不整批预读）。"""
+        """探测哪些日内频率当天有历史 bar（跨池均匀抽样试读，不整批预读）。
+
+        抽样而非取前 N 个：覆盖稀疏（部分标的才有历史）时更不易误判。
+        """
         historic: set[str] = set()
-        probe = tuple(codes[:5]) if codes else None
+        if not codes or not freqs:
+            return historic
+        probe = tuple(self._spread_sample(codes, 8))
         for frequency in sorted(freqs):
             try:
                 batch = self.data_gateway.read(DataRequest(dataset="market.bar", instruments=probe, start=session.open, end=session.close, frequency=frequency, fields=("close",), price_basis="raw"))
@@ -506,6 +513,17 @@ class FastBacktestEngine:
             if batch.records:
                 historic.add(frequency)
         return historic
+
+    @staticmethod
+    def _spread_sample(codes: list[str], k: int) -> list[str]:
+        """在有序 code 列表里均匀取至多 ``k`` 个（含首尾）。"""
+        n = len(codes)
+        if n <= k:
+            return list(codes)
+        if k <= 1:
+            return [codes[0]]
+        indices = sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
+        return [codes[i] for i in indices]
 
     @staticmethod
     def _resolve_shard_size(pool_size: int) -> int:
