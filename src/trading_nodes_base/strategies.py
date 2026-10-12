@@ -208,7 +208,30 @@ class BaseStrategy:
             self.timer.position_pool = list(self.current_positions)
             self.timer.stock_pool = list(dict.fromkeys([*target_pool, *self.current_positions]))
             self.timer.on_daily(target_pool, self.current_positions, self._account_info(), filter_codes=self.selector is not None)
+            self._run_daily_signals()
         self.context.set("selection_passed_to_timer", True)
+
+    def _run_daily_signals(self) -> None:
+        """盘前消费非日内因子的声明式信号 → 订单（B1：盘前算、当日成交）。"""
+        if self.timer is None or not hasattr(self.timer, "daily_signals"):
+            return
+        prices, intents = self.timer.daily_signals(self._current_date)
+        if not intents:
+            return
+        for intent in intents:
+            price = float(prices.get(intent.code, 0.0))
+            created = self.timer.convert_intents([intent], price)
+            self._record_timer_orders(created, price)
+            self._pending_orders.extend(created)
+        consumed = {id(intent) for intent in intents}
+        self.timer.pending_intents = [
+            intent for intent in self.timer.pending_intents if id(intent) not in consumed
+        ]
+        price_dict = {code: float(value) for code, value in prices.items() if value}
+        if self.tick_matcher is not None:
+            self._submit_pending_to_matcher(price_dict, frequency="1d")
+        else:
+            self._execute_pending_orders(price_dict)
 
     def _account_info(self) -> Dict[str, Any]:
         if self.account is None:

@@ -502,7 +502,12 @@ class IntradayKlineFactor(StreamFactor):
 
 
 class NonIntradayKlineFactor(DeclaredFactor):
-    """三级：择时·非日内 kline 因子（声明式取历史，``frequency`` 以 d 结尾）。"""
+    """三级：择时·非日内 kline 因子（声明式取历史，``frequency`` 以 d 结尾）。
+
+    声明式契约：``get_history_requirements`` 请求以当日为锚、含 ``lookback`` 的日线窗口；
+    引擎在**盘前**取回后（``as_of`` 为盘前，故窗口到上一交易日），由 :meth:`daily_signal`
+    计算信号——不再依赖 ``on_bar`` 流式累积，因而无暖机、无窗口前注入。
+    """
 
     _fixed_factor_kind = "timing_kline"
     factor_kind = "timing_kline"
@@ -510,6 +515,7 @@ class NonIntradayKlineFactor(DeclaredFactor):
     frequency = "1d"
     emitted_actions: frozenset[str] = frozenset()
     lookback_days: Optional[int] = None
+    history_fields: tuple[str, ...] = ("close",)
 
     def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(factor_name, params)
@@ -528,10 +534,50 @@ class NonIntradayKlineFactor(DeclaredFactor):
             return int(declared)
         return int(normalize_frequency(type(self).frequency)[:-1])
 
+    def get_query_lst(self, date: Any = None, codes: Optional[List[str]] = None) -> List[Any]:
+        """非日内因子默认不声明主动查询（走默认窗口）。子类可覆写以自定义取数。"""
+        return []
+
     def get_history_requirements(
         self, date: Any, codes: Optional[List[str]] = None
     ) -> List[Any]:
-        return self.get_query_lst(date, codes=codes)
+        """声明式数据需求：优先用子类的显式 ``get_query_lst``；否则以 ``date`` 为锚、
+        向前 ``history_lookback_days`` 天的日线窗口。"""
+        declared = self.get_query_lst(date, codes=codes)
+        if declared:
+            return declared
+        window = self.history_lookback_days
+        code_list = list(codes or ())
+        if window <= 0 or not code_list:
+            return []
+        return [{
+            "dataset": "market.bar",
+            "anchor": date,
+            "windows": (-window, 0),
+            "codes": code_list,
+            "fields": tuple(self.history_fields),
+            "frequency": normalize_frequency(type(self).frequency),
+        }]
+
+    def history_bars(self, date: Any) -> Dict[str, List[Any]]:
+        """把盘前取回的窗口历史按标的聚成 ``{code: [bar,...]}``（按时间升序）。"""
+        by_code: Dict[str, List[Any]] = {}
+        for payload in self._history_received_data.values():
+            records = getattr(payload, "records", payload)
+            for record in records or ():
+                code = getattr(record, "instrument_id", None)
+                if code is None and isinstance(record, dict):
+                    code = record.get("instrument_id")
+                if not code:
+                    continue
+                by_code.setdefault(str(code), []).append(record)
+        for bars in by_code.values():
+            bars.sort(key=lambda b: getattr(b, "interval_end", None) or getattr(b, "close", None))
+        return by_code
+
+    def daily_signal(self, date: Any) -> tuple[Dict[str, float], List[SignalIntent]]:
+        """盘前计算：返回 ``(参考价 {code: last_close}, [SignalIntent])``。子类覆写。"""
+        return {}, []
 
     def on_bar(self, bar: KlineBar) -> List[SignalIntent]:
         return []

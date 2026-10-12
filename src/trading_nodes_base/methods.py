@@ -690,6 +690,21 @@ class BaseTimeSelection(BaseComponent):
             factors[factor.factor_name] = (kind, frequency, sorted(codes))
         return {"kline": kline, "tick": tick, "factors": factors}
 
+    def daily_signals(self, date: Any) -> tuple[Dict[str, float], List[SignalIntent]]:
+        """盘前从非日内 kline 因子的声明式历史计算信号：返回 ``(参考价, [SignalIntent])``。
+
+        非日内因子在盘前一次性算完（窗口前历史随声明式取数到位），不依赖 ``on_bar`` 流式。
+        """
+        prices: Dict[str, float] = {}
+        intents: List[SignalIntent] = []
+        for factor in self.kline_factors:
+            if not isinstance(factor, NonIntradayKlineFactor):
+                continue
+            factor_prices, factor_intents = factor.daily_signal(date)
+            prices.update(factor_prices)
+            intents.extend(replace(item, metadata={**dict(item.metadata), "origin_factor": factor.factor_name}) for item in factor_intents)
+        return prices, intents
+
     def kline_bar_input(self, bar: KlineBar) -> List[SignalIntent]:
         if not isinstance(bar, KlineBar):
             raise TypeError(f"kline_bar_input expected KlineBar, got {type(bar).__name__}")
