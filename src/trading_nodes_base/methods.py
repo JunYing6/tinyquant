@@ -903,7 +903,19 @@ class BaseRiskControl(BaseComponent):
             return self._apply_layer_result(replace(emergency, force_liquidate=True, target_position_ratio=0.0, trading_allowed=False))
         base = self._normalize_layer_result(self.evaluate_base(self.daily_factor_data))
         dynamic = self.evaluate_dynamic(self.daily_factor_data, base) if len(inspect.signature(self.evaluate_dynamic).parameters) >= 2 else self.evaluate_dynamic(self.daily_factor_data)
-        return self._apply_layer_result(self._normalize_layer_result(dynamic))
+        self._apply_layer_result(self._normalize_layer_result(dynamic))
+        # 非日内风控因子（声明式窗口）在分层结果之后并入，避免被覆盖
+        self._compute_pre_market_kline_risk()
+        return self.risk_decision
+
+    def _compute_pre_market_kline_risk(self) -> None:
+        """盘前用声明式历史计算非日内风控因子，合并进当前风险决策。"""
+        signals: List[RiskSignal] = []
+        for factor in self.risk_kline_factors:
+            if isinstance(factor, RiskNonIntradayKlineFactor):
+                when = getattr(self, "_current_date", None) or getattr(factor, "_current_date", None)
+                signals.extend(factor.daily_risk(when))
+        self._update_decision_from_signals(signals)
 
     def _scope_stream_factors(self) -> None:
         """给流式风控因子（kline/tick）设目标代码，聚合订阅池（与择时器同构）。"""
@@ -926,6 +938,23 @@ class BaseRiskControl(BaseComponent):
 
     def set_pool_change_callback(self, callback: Optional[Any]) -> None:
         self._on_pool_change = callback
+
+    def get_history_requirements(self, date: Any, codes: Optional[list[str]] = None) -> List[Any]:
+        """非日内风控 kline 因子的声明式历史需求（窗口到上一交易日，走 history 通道）。"""
+        requested = list(codes if codes is not None else self.data_required_pool)
+        requirements: List[Any] = []
+        for index, factor in enumerate(self.risk_kline_factors):
+            if not isinstance(factor, RiskNonIntradayKlineFactor):
+                continue
+            state = factor._snapshot_request_state()
+            try:
+                factor_queries = factor.get_history_requirements(date, requested)
+            finally:
+                factor._restore_request_state(state)
+            requirements.extend(
+                self._route_factor_queries(index, factor, factor_queries, history=True)
+            )
+        return requirements
 
     def stream_demands(self) -> Dict[str, Any]:
         """按流式风控因子声明构建需求表（与 :meth:`BaseTimeSelection.stream_demands` 同构）。

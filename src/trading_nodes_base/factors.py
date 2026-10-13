@@ -584,12 +584,18 @@ class NonIntradayKlineFactor(DeclaredFactor):
 
 
 class RiskNonIntradayKlineFactor(DeclaredFactor):
-    """三级：风控·非日内 kline 因子（声明式取历史，``frequency`` 以 d 结尾）。"""
+    """三级：风控·非日内 kline 因子（声明式取历史，``frequency`` 以 d 结尾）。
+
+    声明式契约与择时非日内因子一致：盘前经 ``get_history_requirements`` 取回日线窗口
+    （``as_of`` 为盘前，故到上一交易日），由 :meth:`daily_risk` 计算风控信号。
+    """
 
     _fixed_factor_kind = "risk_kline"
     factor_kind = "risk_kline"
     output_schema = "risk_signal"
     frequency = "1d"
+    lookback_days: Optional[int] = None
+    history_fields: tuple[str, ...] = ("high", "low", "close")
 
     def __init__(self, factor_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(factor_name, params)
@@ -600,6 +606,56 @@ class RiskNonIntradayKlineFactor(DeclaredFactor):
                 f"got {type(self).frequency!r}"
             )
         int(frequency[:-1])
+
+    def get_query_lst(self, date: Any = None, codes: Optional[List[str]] = None) -> List[Any]:
+        return []
+
+    @property
+    def history_lookback_days(self) -> int:
+        declared = type(self).lookback_days
+        if declared is not None:
+            return int(declared)
+        return int(normalize_frequency(type(self).frequency)[:-1])
+
+    def get_history_requirements(
+        self, date: Any, codes: Optional[List[str]] = None
+    ) -> List[Any]:
+        """声明式数据需求：以 ``date`` 为锚、向前 ``history_lookback_days`` 天的日线窗口。"""
+        declared = self.get_query_lst(date, codes=codes)
+        if declared:
+            return declared
+        window = self.history_lookback_days
+        code_list = list(codes or ())
+        if window <= 0 or not code_list:
+            return []
+        return [{
+            "dataset": "market.bar",
+            "anchor": date,
+            "windows": (-window, 0),
+            "codes": code_list,
+            "fields": tuple(self.history_fields),
+            "frequency": normalize_frequency(type(self).frequency),
+        }]
+
+    def history_bars(self, date: Any) -> Dict[str, List[Any]]:
+        """把盘前取回的窗口历史按标的聚成 ``{code: [bar,...]}``（按时间升序）。"""
+        by_code: Dict[str, List[Any]] = {}
+        for payload in self._history_received_data.values():
+            records = getattr(payload, "records", payload)
+            for record in records or ():
+                code = getattr(record, "instrument_id", None)
+                if code is None and isinstance(record, dict):
+                    code = record.get("instrument_id")
+                if not code:
+                    continue
+                by_code.setdefault(str(code), []).append(record)
+        for bars in by_code.values():
+            bars.sort(key=lambda b: getattr(b, "interval_end", None) or getattr(b, "close", None))
+        return by_code
+
+    def daily_risk(self, date: Any) -> List[RiskSignal]:
+        """盘前从声明式历史计算风控信号。子类覆写。"""
+        return []
 
     def on_bar(self, bar: KlineBar) -> List[RiskSignal]:
         return []

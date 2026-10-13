@@ -165,12 +165,19 @@ class BaseStrategy:
                 requirements.append(
                     with_routing(canonical_request(query), source="timer_history")
                 )
+        if self.risk_ctrl is not None:
+            risk_codes = list(self.timer.stock_pool) if self.timer is not None else None
+            for query in self.risk_ctrl.get_history_requirements(date, risk_codes):
+                requirements.append(
+                    with_routing(canonical_request(query), source="risk_history")
+                )
         return requirements
 
     def receive_data(self, batch: DataBatch, delivery_key: str | None = None) -> None:
+        _route = {"selector": self.selector, "timer": self.timer, "timer_history": self.timer, "risk": self.risk_ctrl, "risk_history": self.risk_ctrl}
         if isinstance(batch, dict) and delivery_key is not None and not isinstance(delivery_key, str):
             sign = batch
-            component = {"selector": self.selector, "timer": self.timer, "timer_history": self.timer, "risk": self.risk_ctrl}.get(sign.get("source"))
+            component = _route.get(sign.get("source"))
             if component is not None:
                 component.receive_data(sign, delivery_key)
             return
@@ -178,12 +185,12 @@ class BaseStrategy:
         source = sign.get("source")
         if not isinstance(source, str):
             return
-        component = {"selector": self.selector, "timer": self.timer, "timer_history": self.timer, "risk": self.risk_ctrl}.get(source)
+        component = _route.get(source)
         if component is None:
             return
         component.receive_data(sign, batch)
-        if not self._daily_pipeline_triggered and self._is_pipeline_ready():
-            self._run_daily_pipeline()
+        # 不在逐批触发：待 run_daily 处理完全部查询后再由 continue_pipeline 统一触发，
+        # 保证盘前计算（daily_signals / daily_risk）能看到当天全部声明式历史。
 
     def continue_pipeline(self, date: datetime) -> List[Any]:
         if self.selector is not None and not self.selector.check_data():
