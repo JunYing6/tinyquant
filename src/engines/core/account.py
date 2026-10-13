@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any, Mapping
 
 
@@ -80,15 +81,28 @@ class Account:
             if not isinstance(price, (int, float)) or isinstance(price, bool) or price <= 0:
                 raise ValueError("order price must be positive")
             quantity = self._resolve_quantity(float(price), float(amount), str(order_type))
+            date_key = self._date_key(date)
             if quantity > 0:
-                filled = self._buy(str(date), time, code, float(price), quantity)
+                filled = self._buy(date_key, time, code, float(price), quantity)
             elif quantity < 0:
-                filled = -self._sell(str(date), time, code, float(price), -quantity)
+                filled = -self._sell(date_key, time, code, float(price), -quantity)
             else:
                 filled = 0
             if filled:
                 fills.append((date, time, code, float(price), filled, "n"))
         return fills
+
+    @staticmethod
+    def _date_key(value: Any) -> str:
+        """把成交日期统一成 ``YYYYMMDD``，保证 trade_log 键格式一致。"""
+        if isinstance(value, datetime):
+            return value.strftime("%Y%m%d")
+        if isinstance(value, date):
+            return value.strftime("%Y%m%d")
+        text = str(value).replace("-", "")
+        if len(text) >= 8 and text[:8].isdigit():
+            return text[:8]
+        return str(value)
 
     def _resolve_quantity(self, price: float, amount: float, order_type: str) -> int:
         if order_type == "n":

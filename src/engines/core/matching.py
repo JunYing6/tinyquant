@@ -207,7 +207,7 @@ class MatchingEngine:
             signed = remaining if order.action == "BUY" else -remaining
             try:
                 result = self._account_order(
-                    [("", "", code, float(fill_price), signed, "n")]
+                    [(self._fill_date(trade_date), "", code, float(fill_price), signed, "n")]
                 )
             except Exception as error:
                 order.reason = str(error)
@@ -305,6 +305,16 @@ class MatchingEngine:
             if (order.action == "BUY" and volume > 0) or (order.action == "SELL" and volume < 0):
                 filled += abs(volume)
         return min(remaining, filled)
+
+    @staticmethod
+    def _fill_date(trade_date: Any) -> str:
+        """成交记账日期：未知返回空串，避免日期记录损坏。"""
+        if trade_date is None:
+            return ""
+        try:
+            return MatchingEngine._date_key(trade_date)
+        except (TypeError, ValueError):
+            return ""
 
     @staticmethod
     def _date_key(value: Any) -> str:
