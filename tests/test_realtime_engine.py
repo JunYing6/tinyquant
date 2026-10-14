@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 import pytest
+import time
 
 from engines.realtime import RealTimeTradeEngine
 from engines.core.trading_adapter import TradingContractAdapter
@@ -341,6 +342,18 @@ def test_realtime_simulate_persists_stream_shadows_and_child_ledger() -> None:
 
     assert restored.account.positions == {"000001.SZ": 100}
     assert restored.entity.strategies["child"].settled_timer_positions() == {"000001.SZ": 100}
+
+
+def test_realtime_simulate_clock_advances_in_real_time() -> None:
+    # 模拟模式时钟线程：真实走秒，按步进推进 now（0.05s 睡 -> 1s 进）
+    engine = _engine(LiveStrategy(), MockTradeExecutor(), _day_gateway(_day()),
+                     simulate=True, sim_step_sleep=0.05, sim_step_advance=timedelta(seconds=1))
+    engine.start()
+    now0 = engine._clock.now
+    time.sleep(0.3)  # ≈ 6 步 × 1s
+    now1 = engine._clock.now
+    engine.stop()
+    assert (now1 - now0).total_seconds() >= 4  # 至少推进了 ~5 秒
 
 
 def test_realtime_engine_subscribes_canonical_streams_and_syncs_account() -> None:

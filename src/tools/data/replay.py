@@ -29,8 +29,9 @@ r"""确定性的市场事件回放：时钟、排序、去重与投递。
 from __future__ import annotations
 
 import warnings
+import threading
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from heapq import heappop, heappush
 from typing import Callable, Iterator
 
@@ -114,13 +115,15 @@ class LiveClock:
     """由外部观测到的时间戳推进的时钟。
 
     与 :class:`ReplayClock` 不同，它容忍乱序的*观测*：:meth:`update` 会把回拨
-    的输入钳制住，使 :attr:`now` 保持单调而不抛出异常。
+    的输入钳制住，使 :attr:`now` 保持单调而不抛出异常。模拟模式可经
+    :meth:`advance_step` 由引擎线程按固定步进真实走秒。
     """
 
     def __init__(self, session: Session) -> None:
         self.session = session
         self._now = session_open(session)
         self._closed = False
+        self._lock = threading.RLock()
 
     @property
     def now(self) -> datetime:
@@ -132,8 +135,14 @@ class LiveClock:
 
     def update(self, observed_time: datetime) -> None:
         """推进到某个观测时间戳，钳制以保持单调。"""
-        if observed_time > self._now:
-            self._now = observed_time
+        with self._lock:
+            if observed_time > self._now:
+                self._now = observed_time
+
+    def advance_step(self, step: timedelta) -> None:
+        """模拟模式真实走秒：把 ``now`` 单调推进一个 ``step``。"""
+        with self._lock:
+            self._now = self._now + step
 
     def close(self) -> None:
         """幂等地关闭时钟（空操作；为生命周期对称性预留）。"""

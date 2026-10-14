@@ -6,7 +6,7 @@ import logging
 import queue
 import threading
 import uuid
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from engines.core.account import Account
@@ -49,6 +49,8 @@ class RealTimeTradeEngine:
         control_callback: Callable[[StreamEvent], None] | None = None,
         simulate: bool = False,
         state_storage: Any = None,
+        sim_step_sleep: float = 0.5,
+        sim_step_advance: timedelta = timedelta(seconds=1),
     ) -> None:
         if data_gateway is None:
             raise ValueError("data_gateway is required")
@@ -65,6 +67,10 @@ class RealTimeTradeEngine:
         self.is_stream = isinstance(entity, BaseStream)
         self.simulate = bool(simulate)
         self._state_storage = state_storage
+        self.sim_step_sleep = float(sim_step_sleep)
+        self.sim_step_advance = sim_step_advance
+        self._clock_thread: threading.Thread | None = None
+        self._clock_stop = threading.Event()
         # 共享上下文由引擎统一持有并分发到策略/流及各节点；save/restore 走同一 storage。
         self.context = TradingContext(self._state_storage)
         self.account = Account(self.initial_capital)
@@ -105,6 +111,7 @@ class RealTimeTradeEngine:
             self._clock = LiveClock(self._session)
             self._current_date = self._session.trading_date
             self._pipeline.clock = self._clock
+            self._start_clock_thread()
             self._run_daily_pipeline(self._session.trading_date)
             self._subscribe_streams()
             self._adapter.set_risk_bar_sink(self._on_risk_bar)
@@ -123,6 +130,7 @@ class RealTimeTradeEngine:
             self._running = False
             self._subscribed = False
             self._paused = False
+        self._stop_clock_thread()
         for dataset, subscription in tuple(self._subscriptions.items()):
             try:
                 subscription.cancel()
@@ -300,6 +308,33 @@ class RealTimeTradeEngine:
 
     def _strategies(self) -> list[Any]:
         return list(self.entity.strategies.values()) if self.is_stream else [self.entity]
+
+    def _start_clock_thread(self) -> None:
+        """模拟模式：起一个时钟线程按 ``sim_step_sleep`` 睡眠、每步把模拟时钟
+        单调推进 ``sim_step_advance``，实现"真实走秒"（可加速/减速）且不阻塞事件消费。"""
+        if not self.simulate or self.sim_step_sleep <= 0 or self._clock is None:
+            return
+        self._clock_stop.clear()
+
+        def _tick() -> None:
+            while not self._clock_stop.is_set():
+                self._clock_stop.wait(self.sim_step_sleep)
+                if self._clock_stop.is_set():
+                    break
+                clock = self._clock
+                if clock is not None:
+                    clock.advance_step(self.sim_step_advance)
+
+        self._clock_thread = threading.Thread(target=_tick, daemon=True, name="sim-clock")
+        self._clock_thread.start()
+
+    def _stop_clock_thread(self) -> None:
+        thread = self._clock_thread
+        if thread is None:
+            return
+        self._clock_stop.set()
+        thread.join(timeout=5.0)
+        self._clock_thread = None
 
     def _distribute_context(self, entity: Any) -> None:
         """把引擎持有的共享上下文分发到策略/流；在 ``set_account`` 前调用，
