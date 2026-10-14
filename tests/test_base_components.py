@@ -602,6 +602,50 @@ def test_timer_history_routes_without_clearing_active_factor_state() -> None:
     assert "history-data" in timer.all_factors[0]._history_received_data.values()
 
 
+class _MemoryStorage:
+    """内存版 StateStorage：模拟收盘落盘，清掉引用即等价"清内存后重启"。"""
+
+    def __init__(self) -> None:
+        self._state: dict | None = None
+
+    def save(self, state: dict) -> None:
+        import copy
+        self._state = copy.deepcopy(state)
+
+    def load(self) -> dict | None:
+        return self._state
+
+
+def test_timer_ledger_survives_shutdown_and_restart() -> None:
+    # 择时器台账（虚拟账户）是风控缩放基准，收盘下线清内存后必须能重建。
+    import trading_nodes_base.strategies as _s
+
+    storage = _MemoryStorage()
+    timer = Timer()
+    strategy = Strategy("ledger-persist", timer=timer, state_storage=storage)
+    strategy._timer_orders = [
+        _s._TimerOrder(
+            request=ExecutionRequest(code="000001.SZ", action="BUY", time="t", price=10.0, volume=100),
+            code="000001.SZ", action="BUY", target_volume=100, status="filled", order_id="o1",
+        ),
+        _s._TimerOrder(
+            request=ExecutionRequest(code="600000.SH", action="BUY", time="t", price=5.0, volume=200),
+            code="600000.SH", action="BUY", target_volume=200, status="filled", order_id="o2",
+        ),
+    ]
+    assert strategy.settled_timer_positions() == {"000001.SZ": 100, "600000.SH": 200}
+
+    # 收盘保存
+    strategy.save_state()
+    assert storage.load() is not None
+
+    # 清内存：全新策略、同一 storage（等价重启后从磁盘恢复）
+    restarted = Strategy("ledger-persist", timer=Timer(), state_storage=storage)
+    restarted.restore_state()
+
+    assert restarted.settled_timer_positions() == {"000001.SZ": 100, "600000.SH": 200}
+
+
 def test_mapping_requests_work_standalone_and_inside_a_stream() -> None:
     mapping_risk = BaseRiskControl("mapping-risk", daily_factors=[MappingRequestFactor("streamed")])
     strategy = Strategy("mapping-strategy", timer=Timer(), risk_ctrl=mapping_risk)

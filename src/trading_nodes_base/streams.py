@@ -21,9 +21,10 @@ _MAX_RETURN_HISTORY = 504
 
 
 class BaseStream:
-    def __init__(self, stream_name: str, strategies: List[BaseStrategy], mind: BaseMind) -> None:
+    def __init__(self, stream_name: str, strategies: List[BaseStrategy], mind: BaseMind, state_storage: Any = None) -> None:
         self.stream_name = stream_name
         self.mind = mind
+        self._state_storage = state_storage
         names = [strategy.strategy_name for strategy in strategies]
         if len(names) != len(set(names)):
             raise ValueError("duplicate strategy_name values are not allowed")
@@ -137,6 +138,54 @@ class BaseStream:
             self.shadow_accounts[name] = shadow
             self._prev_substrategy_equity[name] = initial
             self._child_open_equity[name] = initial
+        self.restore_state()  # 收盘下线清内存后：恢复影子账户/虚拟状态
+
+    def save_state(self) -> None:
+        """持久化组合流影子层跨日状态（收盘下线清内存后需重建）。"""
+        if self._state_storage is None:
+            return
+        self._state_storage.save({
+            "stream_name": self.stream_name,
+            "shadow_accounts": {
+                name: {
+                    "money": getattr(account, "_balance", account.balance),
+                    "total_equity": getattr(account, "_total_equity", account.total_equity),
+                    "positions": dict(account.positions),
+                    "cost_prices": dict(account.cost_prices),
+                }
+                for name, account in self.shadow_accounts.items()
+            },
+            "child_open_equity": dict(self._child_open_equity),
+            "prev_substrategy_equity": dict(self._prev_substrategy_equity),
+            "shadow_capital": self._shadow_capital,
+            "return_history": {name: list(hist) for name, hist in self._substrategy_return_history.items()},
+        })
+
+    def restore_state(self) -> None:
+        """从 storage 恢复影子层跨日状态（须在 ``set_account`` 建好影子账户后调用）。"""
+        if self._state_storage is None or not self.shadow_accounts:
+            return
+        state = self._state_storage.load()
+        if not state:
+            return
+        for name, data in (state.get("shadow_accounts") or {}).items():
+            account = self.shadow_accounts.get(name)
+            if account is None:
+                continue
+            try:
+                account._balance = float(data.get("money", getattr(account, "_balance", 0.0)))
+                account._total_equity = float(data.get("total_equity", getattr(account, "_total_equity", 0.0)))
+                account._positions = dict(data.get("positions", {}))
+                account._cost_prices = dict(data.get("cost_prices", {}))
+            except AttributeError:
+                pass
+        self._child_open_equity = {name: float(v) for name, v in (state.get("child_open_equity") or {}).items()}
+        self._prev_substrategy_equity = {name: float(v) for name, v in (state.get("prev_substrategy_equity") or {}).items()}
+        self._shadow_capital = float(state.get("shadow_capital", self._shadow_capital))
+        self._substrategy_return_history = {
+            name: deque(list(hist), maxlen=_MAX_RETURN_HISTORY)
+            for name, hist in (state.get("return_history") or {}).items()
+        }
 
     def get_return_history(self, strategy_name: str, lookback: Optional[int] = None) -> Optional[pd.Series]:
         history = self._substrategy_return_history.get(strategy_name)
@@ -261,6 +310,7 @@ class BaseStream:
         for name, strategy in self.strategies.items():
             if name not in self._skip_children:
                 strategy.on_day_end()
+        self.save_state()  # 日终落盘：影子账户/虚拟状态跨日保全
 
     def execute_daily(self, price_dict: Dict[str, float], before: Optional[Dict[str, Dict[str, int]]] = None) -> None:
         """子策略按日执行并把它们的加权净额镜像到真实账户。

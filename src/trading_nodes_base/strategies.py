@@ -919,6 +919,18 @@ class BaseStrategy:
             "tail_replenished": self._tail_replenished,
             "last_risk_target_ratio": self._last_risk_target_ratio,
             "pending_orders": [_request_to_dict(request) for request in self._pending_orders],
+            # 择时器台账（虚拟账户）→ 风控缩放基准：跨日/重启必须保全，否则风控会把真实持仓全清。
+            "timer_orders": [
+                {
+                    "request": _request_to_dict(order.request),
+                    "code": order.code,
+                    "action": order.action,
+                    "target_volume": order.target_volume,
+                    "status": order.status,
+                    "order_id": order.order_id,
+                }
+                for order in self._timer_orders
+            ],
         }
 
     def save_state(self) -> None:
@@ -939,6 +951,17 @@ class BaseStrategy:
         self._last_risk_target_ratio = float(state.get("last_risk_target_ratio", 1.0) or 1.0)
         self._pending_orders = [
             _request_from_dict(data) for data in (state.get("pending_orders", []) or [])
+        ]
+        self._timer_orders = [
+            _TimerOrder(
+                request=_request_from_dict(data["request"]),
+                code=data["code"],
+                action=data["action"],
+                target_volume=int(data["target_volume"]),
+                status=data.get("status", "recorded"),
+                order_id=data.get("order_id"),
+            )
+            for data in (state.get("timer_orders", []) or [])
         ]
 
     def daily_execute(self, price_dict: Dict[str, float]) -> List[tuple]:
