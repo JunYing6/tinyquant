@@ -311,6 +311,38 @@ def test_realtime_simulate_persists_engine_account_across_shutdown() -> None:
     assert restored.account._balance == engine.account._balance
 
 
+def test_realtime_simulate_persists_stream_shadows_and_child_ledger() -> None:
+    # stream 形态：影子账户 + 子策略择时器台账（风控缩放基准）跨"关机清内存"全保留
+    import trading_nodes_base.strategies as _s
+
+    storage = _MemorySimStorage()
+    child = LiveStrategy("child")
+    stream = BaseStream("sim-stream", [child], EqualMind())
+    engine = RealTimeTradeEngine(stream, data_gateway=_day_gateway(_day()), trade_executor=MockTradeExecutor(),
+                                 initial_capital=100_000, simulate=True, state_storage=storage)
+    engine._current_date = datetime.now(timezone.utc).date()
+    engine._execute_order(("20240102", "09:31:00", "000001.SZ", 10.0, 100, "n"))
+    assert engine.account.positions == {"000001.SZ": 100}
+    child._timer_orders = [
+        _s._TimerOrder(
+            request=ExecutionRequest(code="000001.SZ", action="BUY", time="t", price=10.0, volume=100),
+            code="000001.SZ", action="BUY", target_volume=100, status="filled", order_id="o1",
+        ),
+    ]
+    engine._save_sim_state()  # 收盘落盘
+
+    # 次日盘前：全新 stream+引擎、同一 storage
+    restored = RealTimeTradeEngine(
+        BaseStream("sim-stream", [LiveStrategy("child")], EqualMind()),
+        data_gateway=_day_gateway(_day()), trade_executor=MockTradeExecutor(),
+        initial_capital=100_000, simulate=True, state_storage=storage,
+    )
+    restored._restore_sim_state()
+
+    assert restored.account.positions == {"000001.SZ": 100}
+    assert restored.entity.strategies["child"].settled_timer_positions() == {"000001.SZ": 100}
+
+
 def test_realtime_engine_subscribes_canonical_streams_and_syncs_account() -> None:
     gateway = _day_gateway(_day())
     trader = MockTradeExecutor()

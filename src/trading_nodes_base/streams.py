@@ -21,10 +21,11 @@ _MAX_RETURN_HISTORY = 504
 
 
 class BaseStream:
-    def __init__(self, stream_name: str, strategies: List[BaseStrategy], mind: BaseMind, state_storage: Any = None) -> None:
+    def __init__(self, stream_name: str, strategies: List[BaseStrategy], mind: BaseMind, state_storage: Any = None, context: Any = None) -> None:
         self.stream_name = stream_name
         self.mind = mind
         self._state_storage = state_storage
+        self.context = context  # 引擎统一注入的共享上下文；None 时自建
         names = [strategy.strategy_name for strategy in strategies]
         if len(names) != len(set(names)):
             raise ValueError("duplicate strategy_name values are not allowed")
@@ -141,10 +142,11 @@ class BaseStream:
         self.restore_state()  # 收盘下线清内存后：恢复影子账户/虚拟状态
 
     def save_state(self) -> None:
-        """持久化组合流影子层跨日状态（收盘下线清内存后需重建）。"""
-        if self._state_storage is None:
-            return
-        self._state_storage.save({
+        """持久化组合流影子/账户层跨日状态（收盘下线清内存后需重建）。
+
+        优先写引擎注入的共享上下文（``stream:*`` segment）；无 context 时回退独立 storage。
+        """
+        snapshot = {
             "stream_name": self.stream_name,
             "shadow_accounts": {
                 name: {
@@ -155,17 +157,37 @@ class BaseStream:
                 }
                 for name, account in self.shadow_accounts.items()
             },
+            "real_account": (
+                {
+                    "money": getattr(self.real_account, "_balance", None),
+                    "total_equity": getattr(self.real_account, "_total_equity", None),
+                    "positions": dict(self.real_account.positions),
+                    "cost_prices": dict(self.real_account.cost_prices),
+                }
+                if self.real_account is not None
+                else None
+            ),
             "child_open_equity": dict(self._child_open_equity),
             "prev_substrategy_equity": dict(self._prev_substrategy_equity),
             "shadow_capital": self._shadow_capital,
             "return_history": {name: list(hist) for name, hist in self._substrategy_return_history.items()},
-        })
+        }
+        if self.context is not None:
+            node = self.context.node(f"stream:{self.stream_name}")
+            node.set("state", snapshot)
+            self.context.save()
+        elif self._state_storage is not None:
+            self._state_storage.save(snapshot)
 
     def restore_state(self) -> None:
-        """从 storage 恢复影子层跨日状态（须在 ``set_account`` 建好影子账户后调用）。"""
-        if self._state_storage is None or not self.shadow_accounts:
+        """从共享上下文（或 storage）恢复影子/账户层跨日状态（``set_account`` 建好影子后调用）。"""
+        if not self.shadow_accounts:
             return
-        state = self._state_storage.load()
+        state = None
+        if self.context is not None:
+            state = self.context.node(f"stream:{self.stream_name}").get("state")
+        elif self._state_storage is not None:
+            state = self._state_storage.load()
         if not state:
             return
         for name, data in (state.get("shadow_accounts") or {}).items():
@@ -179,6 +201,12 @@ class BaseStream:
                 account._cost_prices = dict(data.get("cost_prices", {}))
             except AttributeError:
                 pass
+        account_data = state.get("real_account") or {}
+        if self.real_account is not None and account_data:
+            self.real_account._balance = float(account_data.get("money", getattr(self.real_account, "_balance", 0.0)))
+            self.real_account._total_equity = float(account_data.get("total_equity", getattr(self.real_account, "_total_equity", 0.0)))
+            self.real_account._positions = dict(account_data.get("positions", {}))
+            self.real_account._cost_prices = dict(account_data.get("cost_prices", {}))
         self._child_open_equity = {name: float(v) for name, v in (state.get("child_open_equity") or {}).items()}
         self._prev_substrategy_equity = {name: float(v) for name, v in (state.get("prev_substrategy_equity") or {}).items()}
         self._shadow_capital = float(state.get("shadow_capital", self._shadow_capital))

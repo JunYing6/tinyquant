@@ -93,6 +93,7 @@ class BaseStrategy:
         timer: Optional[BaseTimeSelection] = None,
         risk_ctrl: Optional[BaseRiskControl] = None,
         state_storage: Optional[StateStorage] = None,
+        context: Optional[TradingContext] = None,
     ) -> None:
         if timer is None:
             raise ValueError("BaseStrategy requires a timer")
@@ -105,7 +106,8 @@ class BaseStrategy:
         self.risk_ctrl = risk_ctrl
         self.account: Any = None
         self._state_storage: Optional[StateStorage] = state_storage
-        self.context = TradingContext(self._state_storage)
+        # 共享上下文由引擎统一持有并注入；未注入时自建（单机直用策略）。
+        self.context = context if context is not None else TradingContext(self._state_storage)
         self._current_date: Any = None
         self._daily_pipeline_triggered = False
         self._position_details: Dict[str, Dict[str, Any]] = {}

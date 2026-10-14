@@ -29,6 +29,7 @@ from tools.data import (
 from tools.trade.providers import TradeExecutor
 from trading_nodes_base.strategies import BaseStrategy
 from trading_nodes_base.streams import BaseStream
+from trading_nodes_base.methods import TradingContext
 
 logger = logging.getLogger(__name__)
 _RESUME_STATES = frozenset({"healthy", "ok", "resumed", "active"})
@@ -64,7 +65,10 @@ class RealTimeTradeEngine:
         self.is_stream = isinstance(entity, BaseStream)
         self.simulate = bool(simulate)
         self._state_storage = state_storage
+        # 共享上下文由引擎统一持有并分发到策略/流及各节点；save/restore 走同一 storage。
+        self.context = TradingContext(self._state_storage)
         self.account = Account(self.initial_capital)
+        self._distribute_context(entity)
         entity.set_account(self.account)
         self._adapter = TradingContractAdapter(entity)
         self._pipeline = UnifiedDataPipeline(entity, data_gateway, self._adapter)
@@ -297,6 +301,16 @@ class RealTimeTradeEngine:
     def _strategies(self) -> list[Any]:
         return list(self.entity.strategies.values()) if self.is_stream else [self.entity]
 
+    def _distribute_context(self, entity: Any) -> None:
+        """把引擎持有的共享上下文分发到策略/流；在 ``set_account`` 前调用，
+        使组件的 ``set_context`` 在注入时即用共享上下文（命名空间按 strategy_name 隔离）。"""
+        if self.is_stream:
+            entity.context = self.context
+            for strategy in entity.strategies.values():
+                strategy.context = self.context
+        else:
+            entity.context = self.context
+
     def _signal_consumer(self) -> None:
         while self._running or not self._signal_queue.empty():
             try:
@@ -358,36 +372,45 @@ class RealTimeTradeEngine:
                         self.account._cost_prices[code] = float(cost)
 
     def _save_sim_state(self) -> None:
-        """模拟模式收盘：保存引擎自管的模拟持仓账户 + 各策略跨日状态到本地。
+        """模拟模式收盘：整份共享上下文落盘（引擎模拟账户 + 各策略/流状态）。
 
         用于模拟"收盘下线、内存清空"；次日盘前由 :meth:`_restore_sim_state` 导入。
         """
         if not self.simulate or self._state_storage is None:
             return
-        self._state_storage.save({
-            "engine_sim_account": {
-                "money": self.account._balance,
-                "total_equity": self.account._total_equity,
-                "positions": dict(self.account._positions),
-                "cost_prices": dict(self.account._cost_prices),
-            },
+        node = self.context.node("engine:sim_account")
+        node.set("state", {
+            "money": self.account._balance,
+            "total_equity": self.account._total_equity,
+            "positions": dict(self.account._positions),
+            "cost_prices": dict(self.account._cost_prices),
         })
-        for strategy in self._strategies():
-            strategy.save_state()
+        if self.is_stream:
+            self.entity.save_state()  # 影子账户 + 真实账户 + 子策略
+            for strategy in self._strategies():
+                strategy.save_state()
+        else:
+            for strategy in self._strategies():
+                strategy.save_state()
+        self.context.save()
 
     def _restore_sim_state(self) -> None:
-        """模拟模式盘前：从本地导入引擎自管账户与各策略跨日状态。"""
+        """模拟模式盘前：从共享上下文导入引擎账户 + 各策略/流状态。"""
         if not self.simulate or self._state_storage is None:
             return
-        state = self._state_storage.load()
+        state = self.context.node("engine:sim_account").get("state") or {}
         if state:
-            account_data = state.get("engine_sim_account") or {}
-            self.account._balance = float(account_data.get("money", self.account._balance))
-            self.account._total_equity = float(account_data.get("total_equity", self.account._total_equity))
-            self.account._positions = dict(account_data.get("positions", {}))
-            self.account._cost_prices = dict(account_data.get("cost_prices", {}))
-        for strategy in self._strategies():
-            strategy.restore_state()
+            self.account._balance = float(state.get("money", self.account._balance))
+            self.account._total_equity = float(state.get("total_equity", self.account._total_equity))
+            self.account._positions = dict(state.get("positions", {}))
+            self.account._cost_prices = dict(state.get("cost_prices", {}))
+        if self.is_stream:
+            self.entity.restore_state()
+            for strategy in self._strategies():
+                strategy.restore_state()
+        else:
+            for strategy in self._strategies():
+                strategy.restore_state()
 
     def _run_daily_pipeline(self, trading_date: date) -> None:
         value = datetime.combine(trading_date, time.min, tzinfo=timezone.utc)
