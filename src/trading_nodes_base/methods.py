@@ -12,6 +12,7 @@ import pandas as pd  # type: ignore[import-untyped]
 
 from tools.data import DataBatch, DataRequest
 from trading_nodes_base.requests import canonical_request, with_routing
+from trading_nodes_base.serialization import decode, encode
 from trading_nodes_base.factors import (
     BaseFactor,
     BinarySelectionFactor,
@@ -64,7 +65,12 @@ class StateStorage(Protocol):
 
 
 class ContextSegment:
-    """A per-node read/write slice of the shared TradingContext."""
+    """A per-node read/write slice of the shared TradingContext.
+
+    支持存任意值（DataFrame / ndarray / 日期 / 自定义对象等）：``set`` 时经
+    :func:`encode` 转成可 JSON 化的载荷，``get`` / :func:`to_dict` 时经
+    :func:`decode` 还原；纯 JSON 类型原样透传，与其他后端/旧数据兼容。
+    """
 
     __slots__ = ("_context", "_name", "_data")
 
@@ -74,11 +80,16 @@ class ContextSegment:
         self._data = data
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
+        value = self._data.get(key, default)
+        return decode(value) if value is not default else default
 
     def set(self, key: str, value: Any) -> None:
-        self._data[key] = value
+        self._data[key] = encode(value)
         self._context._mark_dirty(self._name)
+
+    def get_raw(self, key: str, default: Any = None) -> Any:
+        """未解码的原始载荷（encode 后形态）。"""
+        return self._data.get(key, default)
 
     def has(self, key: str) -> bool:
         return key in self._data
@@ -92,7 +103,7 @@ class ContextSegment:
         return self._name
 
     def to_dict(self) -> Dict[str, Any]:
-        return dict(self._data)
+        return {key: decode(value) for key, value in self._data.items()}
 
 
 class TradingContext:
