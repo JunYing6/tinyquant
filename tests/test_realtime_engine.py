@@ -278,6 +278,39 @@ def test_realtime_engine_requires_gateway_and_trade_executor() -> None:
         RealTimeTradeEngine(LiveStrategy(), data_gateway=RecordingGateway(), trade_executor=None)
 
 
+class _MemorySimStorage:
+    """内存版本地 storage：收盘保存、次日盘前导入（等价关机后重启）。"""
+
+    def __init__(self) -> None:
+        self._state: dict | None = None
+
+    def save(self, state: dict) -> None:
+        import copy
+        self._state = copy.deepcopy(state)
+
+    def load(self) -> dict | None:
+        return self._state
+
+
+def test_realtime_simulate_persists_engine_account_across_shutdown() -> None:
+    # 模拟模式：引擎自管持仓账户，收盘落盘、次日盘前导入，跨"关机清内存"不丢
+    storage = _MemorySimStorage()
+    strategy = LiveStrategy()
+
+    engine = _engine(strategy, MockTradeExecutor(), _day_gateway(_day()), simulate=True, state_storage=storage)
+    engine._current_date = datetime.now(timezone.utc).date()
+    engine._execute_order(("20240102", "09:31:00", "000001.SZ", 10.0, 100, "n"))
+    assert engine.account.positions == {"000001.SZ": 100}
+    engine._save_sim_state()  # 收盘落盘（模拟关机下线）
+
+    # 次日盘前：全新引擎、同一 storage，导入恢复
+    restored = _engine(LiveStrategy(), MockTradeExecutor(), _day_gateway(_day()), simulate=True, state_storage=storage)
+    restored._restore_sim_state()
+
+    assert restored.account.positions == {"000001.SZ": 100}
+    assert restored.account._balance == engine.account._balance
+
+
 def test_realtime_engine_subscribes_canonical_streams_and_syncs_account() -> None:
     gateway = _day_gateway(_day())
     trader = MockTradeExecutor()

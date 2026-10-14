@@ -46,6 +46,8 @@ class RealTimeTradeEngine:
         initial_capital: float = 1_000_000,
         market: str = "CN",
         control_callback: Callable[[StreamEvent], None] | None = None,
+        simulate: bool = False,
+        state_storage: Any = None,
     ) -> None:
         if data_gateway is None:
             raise ValueError("data_gateway is required")
@@ -60,6 +62,8 @@ class RealTimeTradeEngine:
         self.market = market
         self.control_callback = control_callback
         self.is_stream = isinstance(entity, BaseStream)
+        self.simulate = bool(simulate)
+        self._state_storage = state_storage
         self.account = Account(self.initial_capital)
         entity.set_account(self.account)
         self._adapter = TradingContractAdapter(entity)
@@ -88,8 +92,11 @@ class RealTimeTradeEngine:
             self._running = True
             self._started = True
         try:
-            self.trade_executor.connect()
-            self._sync_account()
+            if not self.simulate:
+                self.trade_executor.connect()
+                self._sync_account()
+            else:
+                self._restore_sim_state()
             self._session = self._resolve_session()
             self._clock = LiveClock(self._session)
             self._current_date = self._session.trading_date
@@ -121,16 +128,18 @@ class RealTimeTradeEngine:
         thread = self._signal_thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=5.0)
-        try:
-            self.trade_executor.disconnect()
-        except Exception:
-            logger.exception("trade executor disconnect failed")
+        if not self.simulate:
+            try:
+                self.trade_executor.disconnect()
+            except Exception:
+                logger.exception("trade executor disconnect failed")
         try:
             close = getattr(self.data_gateway, "close", None)
             if close is not None:
                 close()
         except Exception:
             logger.exception("data gateway close failed")
+        self._save_sim_state()  # 停机落盘：模拟持仓账户 + 策略状态跨日保全
         with self._lock:
             self._started = False
 
@@ -216,6 +225,7 @@ class RealTimeTradeEngine:
         else:
             self.account.daily_summarize(prices)
             self.entity.on_day_end()
+        self._save_sim_state()  # 收盘落盘（模拟关机）
         batch = self.data_gateway.sessions(
             CalendarRequest(market=self.market, start=trading_date, end=trading_date)
         )
@@ -312,6 +322,11 @@ class RealTimeTradeEngine:
             action, volume = ("BUY" if signed_volume > 0 else "SELL"), abs(int(signed_volume))
         if not isinstance(code, str) or not isinstance(volume, int) or volume <= 0:
             return
+        if self.simulate:
+            # 模拟模式：撮合走引擎自管账户，模拟持仓账户由引擎负责跨日保存
+            signed = volume if action == "BUY" else -volume
+            self.account.order([(self._current_date, "00:00:00", code, float(price), signed, order_type or "n")])
+            return
         kwargs = {"price": price, "order_type": order_type} if price else {"order_type": order_type}
         result = self.trade_executor.buy(code, volume, **kwargs) if action == "BUY" else self.trade_executor.sell(code, volume, **kwargs) if action == "SELL" else None
         if isinstance(result, Mapping) and result.get("success") is False:
@@ -320,6 +335,8 @@ class RealTimeTradeEngine:
             self._sync_account()
 
     def _sync_account(self) -> None:
+        if self.simulate:
+            return  # 模拟模式：持仓账户由引擎自己管理（见 _execute_order），不从券商同步
         with self._lock:
             snapshot = self.trade_executor.get_account()
             positions = self.trade_executor.get_positions() or []
@@ -339,6 +356,38 @@ class RealTimeTradeEngine:
                     self.account._positions[code] = volume
                     if isinstance(cost, (int, float)) and cost > 0:
                         self.account._cost_prices[code] = float(cost)
+
+    def _save_sim_state(self) -> None:
+        """模拟模式收盘：保存引擎自管的模拟持仓账户 + 各策略跨日状态到本地。
+
+        用于模拟"收盘下线、内存清空"；次日盘前由 :meth:`_restore_sim_state` 导入。
+        """
+        if not self.simulate or self._state_storage is None:
+            return
+        self._state_storage.save({
+            "engine_sim_account": {
+                "money": self.account._balance,
+                "total_equity": self.account._total_equity,
+                "positions": dict(self.account._positions),
+                "cost_prices": dict(self.account._cost_prices),
+            },
+        })
+        for strategy in self._strategies():
+            strategy.save_state()
+
+    def _restore_sim_state(self) -> None:
+        """模拟模式盘前：从本地导入引擎自管账户与各策略跨日状态。"""
+        if not self.simulate or self._state_storage is None:
+            return
+        state = self._state_storage.load()
+        if state:
+            account_data = state.get("engine_sim_account") or {}
+            self.account._balance = float(account_data.get("money", self.account._balance))
+            self.account._total_equity = float(account_data.get("total_equity", self.account._total_equity))
+            self.account._positions = dict(account_data.get("positions", {}))
+            self.account._cost_prices = dict(account_data.get("cost_prices", {}))
+        for strategy in self._strategies():
+            strategy.restore_state()
 
     def _run_daily_pipeline(self, trading_date: date) -> None:
         value = datetime.combine(trading_date, time.min, tzinfo=timezone.utc)
